@@ -62,7 +62,7 @@ module.exports = {
         .addFields(
           {
             name: "⚙️ Métadonnées capturées",
-            value: "• Hiérarchie & Positions\n• Permissions exactes\n• Couleurs & Hoist rôles\n• Sujets, Bitrate & NSFW",
+            value: "• Hiérarchie & Positions\n• Permissions exactes\n• Couleurs & Hoist rôles\n• Sujets, Bitrate & Option +18",
           },
           {
             name: `🎭 Rôles enregistrés (${data.roles.length})`,
