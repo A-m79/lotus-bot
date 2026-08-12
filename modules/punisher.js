@@ -1,17 +1,11 @@
-const { EmbedBuilder } = require("discord.js");
+const { EmbedBuilder, PermissionFlagsBits } = require("discord.js");
 const config = require("../config/config");
 const SecurityLog = require("../models/SecurityLog");
 
-/**
- * Génère un identifiant de dossier unique (Ex: CASE-A7F92)
- */
 function generateCaseId() {
   return `CASE-${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
 }
 
-/**
- * Moteur de sanction centralisé Lotus Security Pro
- */
 async function punish({
   guild,
   guildConfig,
@@ -38,52 +32,49 @@ async function punish({
 
   let punishmentApplied = "none";
   let statusIcon = "⚙️";
+  let success = false;
 
   // 1. Contrôle de hiérarchie des rôles
-  const me = guild.members.me;
+  const me = await guild.members.fetchMe().catch(() => guild.members.me);
   const canManageTarget =
     member &&
     member.id !== guild.ownerId &&
+    me &&
     me.roles.highest.position > member.roles.highest.position;
 
-  // 2. Notification MP (DM) à la cible avant sanction
-  if (targetUser && !targetUser.bot) {
-    const dmEmbed = new EmbedBuilder()
-      .setColor("#FF2A2A")
-      .setTitle(`🛡️ Protection Lotus Security — ${guild.name}`)
-      .setDescription(`Votre compte a déclenché une alerte de sécurité.`)
-      .addFields(
-        { name: "Raison", value: `\`${reason}\``, inline: false },
-        { name: "Sanction", value: `\`${punishment.toUpperCase()}\``, inline: true },
-        { name: "Dossier ID", value: `\`#${caseId}\``, inline: true }
-      )
-      .setFooter({ text: "Si vous pensez qu'il s'agit d'une erreur, contactez un administrateur." })
-      .setTimestamp();
-
-    await targetUser.send({ embeds: [dmEmbed] }).catch(() => null); // Ignore si MPs fermés
-  }
-
-  // 3. Exécution de la sanction
+  // 2. Exécution de la sanction
   try {
     if (member && canManageTarget) {
+      const isTargetAdmin = member.permissions.has(PermissionFlagsBits.Administrator);
+
       switch (punishment) {
         case "ban":
           await guild.members.ban(executorId, { reason: `[Lotus #${caseId}] ${reason}` });
           punishmentApplied = "BAN (Bannissement définitif)";
           statusIcon = "🔨";
+          success = true;
           break;
 
         case "kick":
           await member.kick(`[Lotus #${caseId}] ${reason}`);
           punishmentApplied = "KICK (Exclusion du serveur)";
           statusIcon = "🥾";
+          success = true;
           break;
 
         case "timeout":
-          // Timeout natif Discord de 24h
-          await member.timeout(24 * 60 * 60 * 1000, `[Lotus #${caseId}] ${reason}`);
-          punishmentApplied = "TIMEOUT (Exclusion temporaire 24h)";
-          statusIcon = "⏳";
+          if (isTargetAdmin) {
+            await member.roles.set([], `[Lotus #${caseId}] Retrait rôles Admin pré-timeout`);
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+            await member.timeout(24 * 60 * 60 * 1000, `[Lotus #${caseId}] ${reason}`);
+            punishmentApplied = "STRIP_ROLES + TIMEOUT (Admin neutralisé 24h)";
+            statusIcon = "☣️";
+          } else {
+            await member.timeout(24 * 60 * 60 * 1000, `[Lotus #${caseId}] ${reason}`);
+            punishmentApplied = "TIMEOUT (Exclusion temporaire 24h)";
+            statusIcon = "⏳";
+          }
+          success = true;
           break;
 
         case "quarantine":
@@ -100,6 +91,7 @@ async function punish({
             punishmentApplied = "STRIP_ROLES (Fallback: Pas de rôle Quarantaine)";
             statusIcon = "⚠️";
           }
+          success = true;
           break;
 
         case "stripRoles":
@@ -107,21 +99,39 @@ async function punish({
           await member.roles.set([], `[Lotus #${caseId}] ${reason}`);
           punishmentApplied = "STRIP_ROLES (Retrait de tous les rôles)";
           statusIcon = "🚫";
+          success = true;
           break;
       }
     } else if (member && !canManageTarget) {
       punishmentApplied = "ÉCHEC (Hiérarchie : Le rôle du bot est trop bas)";
       statusIcon = "❌";
     } else if (punishment === "ban") {
-      // Ban d'urgence à distance (Hackban) si le membre n'est plus sur le serveur
       await guild.members.ban(executorId, { reason: `[Lotus #${caseId}] ${reason}` });
       punishmentApplied = "BAN (Bannissement à distance)";
       statusIcon = "🔨";
+      success = true;
     }
   } catch (err) {
     console.error(`[Punisher #${caseId}] Erreur execution sur ${executorId}:`, err.message);
     punishmentApplied = `ERREUR : ${err.message}`;
     statusIcon = "⚠️";
+  }
+
+  // 3. Notification MP (DM) à la cible
+  if (targetUser && !targetUser.bot && success) {
+    const dmEmbed = new EmbedBuilder()
+      .setColor("#FF2A2A")
+      .setTitle(`🛡️ Protection Lotus Security — ${guild.name}`)
+      .setDescription(`Votre compte a déclenché une alerte de sécurité.`)
+      .addFields(
+        { name: "Raison", value: `\`${reason}\``, inline: false },
+        { name: "Sanction", value: `\`${punishmentApplied}\``, inline: true },
+        { name: "Dossier ID", value: `\`#${caseId}\``, inline: true }
+      )
+      .setFooter({ text: "Si vous pensez qu'il s'agit d'une erreur, contactez un administrateur." })
+      .setTimestamp();
+
+    await targetUser.send({ embeds: [dmEmbed] }).catch(() => null);
   }
 
   // 4. Historisation dans MongoDB
@@ -136,12 +146,13 @@ async function punish({
     timestamp: new Date(),
   }).catch((err) => console.error("[SecurityLog DB Error]:", err));
 
-  // 5. Alertes visuelles pro dans le salon de logs
-  if (guildConfig?.alertChannelId) {
-    const channel = await guild.channels.fetch(guildConfig.alertChannelId).catch(() => null);
+  // 5. Envoi des logs dans #logs-lotus (logChannelId) ou fallback sur #alert (alertChannelId)
+  const targetChannelId = guildConfig?.logChannelId || guildConfig?.alertChannelId;
+
+  if (targetChannelId) {
+    const channel = await guild.channels.fetch(targetChannelId).catch(() => null);
 
     if (channel?.isTextBased()) {
-      // Couleurs adaptatives selon le type de punition
       const colors = {
         ban: "#000000",
         kick: "#FF0055",
@@ -149,7 +160,9 @@ async function punish({
         quarantine: "#A800FF",
         stripRoles: "#FFCC00",
       };
-      const embedColor = colors[punishment] || config.EMBED_COLOR_ALERT || "#FF2A2A";
+      const embedColor = success
+        ? colors[punishment] || config.EMBED_COLOR_ALERT || "#FF2A2A"
+        : "#FFCC00";
 
       const embed = new EmbedBuilder()
         .setColor(embedColor)
@@ -157,7 +170,7 @@ async function punish({
           name: `PROTECTION AU SOMMET • ${guild.name.toUpperCase()}`,
           iconURL: guild.iconURL({ dynamic: true }) || undefined,
         })
-        .setTitle(`${statusIcon} Menace Neutralisée — #${caseId}`)
+        .setTitle(`${statusIcon} ${success ? "Menace Neutralisée" : "Alerte Sécurité"} — #${caseId}`)
         .setDescription(`> **Motif :** \`${reason}\``)
         .addFields(
           {
@@ -179,7 +192,6 @@ async function punish({
           }
         );
 
-      // Métadonnées & Preuves formatées
       const filteredDetails = Object.entries(details).filter(([key]) => key !== "previousRoles");
       if (filteredDetails.length > 0) {
         const formattedDetails = filteredDetails
