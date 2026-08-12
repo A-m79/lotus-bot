@@ -1,0 +1,20 @@
+{
+  "name": "lotus-security-bot",
+  "version": "0.1.0",
+  "description": "Lotus - Bot de protection Discord (anti-nuke, anti-raid, anti-spam)",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js",
+    "deploy-commands": "node deploy-commands.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.16.3",
+    "mongoose": "^8.7.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
