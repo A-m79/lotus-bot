@@ -5,6 +5,18 @@ const SecurityLog = require("../models/SecurityLog");
 // Verrou en mémoire pour éviter d'exécuter des sanctions/MP en double lors d'une rafale de messages
 const activePunishments = new Set();
 
+// Liste des actions graves nécessitant un ping @here immédiat
+const SEVERE_ACTIONS = [
+  "MASS_BAN",
+  "MASS_KICK",
+  "CHANNEL_NUKE",
+  "ROLE_NUKE",
+  "WEBHOOK_NUKE",
+  "ANTI_RAID",
+  "PANIC_MODE",
+  "BOT_ADD",
+];
+
 function generateCaseId() {
   return `CASE-${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
 }
@@ -72,14 +84,11 @@ async function punish({
           break;
 
         case "timeout":
-          // D'ABORD : Retrait des rôles (retire Admin) + Attribution rôle Quarantaine direct en 1 seule requête
           const timeoutRoles = guildConfig?.quarantineRoleId ? [guildConfig.quarantineRoleId] : [];
           await member.roles.set(timeoutRoles, `[Lotus #${caseId}] Retrait des rôles + Isolement`);
 
-          // PAUSE : 1.5s pour que l'API Discord enregistre la perte de la permission Admin
           await new Promise((resolve) => setTimeout(resolve, 1500));
 
-          // ENSUITE : Application du Timeout
           await member.timeout(24 * 60 * 60 * 1000, `[Lotus #${caseId}] ${reason}`);
           punishmentApplied = "STRIP_ROLES + TIMEOUT (24h)";
           statusIcon = "☣️";
@@ -132,7 +141,7 @@ async function punish({
     statusIcon = "⚠️";
   }
 
-  // 3. Notification MP (DM) uniquement si la sanction s'est appliquée sans erreur
+  // 3. Notification MP (DM)
   if (targetUser && !targetUser.bot && success) {
     const dmEmbed = new EmbedBuilder()
       .setColor("#FF2A2A")
@@ -182,7 +191,7 @@ async function punish({
       const embed = new EmbedBuilder()
         .setColor(embedColor)
         .setAuthor({
-          name: `PROTECTION AU SOMMET • ${guild.name.toUpperCase()}`,
+          name: `LOTUS SECURITY SYSTEM`,
           iconURL: guild.iconURL({ dynamic: true }) || undefined,
         })
         .setTitle(`${statusIcon} ${success ? "Menace Neutralisée" : "Alerte Sécurité"} — #${caseId}`)
@@ -213,7 +222,7 @@ async function punish({
           .map(([key, val]) => `> **${key}** : \`${val}\``)
           .join("\n");
         embed.addFields({
-          name: "🔍 Preuves & Métadonnées",
+          name: "🔍 Métadonnées",
           value: formattedDetails,
           inline: false,
         });
@@ -227,7 +236,11 @@ async function punish({
         .setFooter({ text: `Lotus Security System • Case #${caseId}` })
         .setTimestamp();
 
-      await channel.send({ embeds: [embed] }).catch(() => null);
+      // Ping @here uniquement si c'est une action de menace grave
+      const isSevere = SEVERE_ACTIONS.includes(actionType.toUpperCase());
+      const messageContent = isSevere ? "🚨 @here **Alerte Sécurité Majeure Détectée !**" : undefined;
+
+      await channel.send({ content: messageContent, embeds: [embed] }).catch(() => null);
     }
   }
 
