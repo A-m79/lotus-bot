@@ -15,19 +15,22 @@ function isWhitelisted(guild, guildConfig, userId) {
 }
 
 /**
- * Analyse multicouche du contenu du message (seuils adaptés si Admin)
+ * Analyse multicouche du contenu (Invites, Mentions, Retours à la ligne, CAPS)
  */
 function analyzeMessage(message, isAdmin) {
   const content = message.content;
   if (!content) return null;
 
-  // 1. Détection des pub / liens d'invitation Discord (Invite Spam)
+  // 1. Pubs / Liens d'invitation Discord
   const inviteRegex = /(discord\.(gg|io|me|li)|discord\.com\/(invite|app\/invite))/i;
   if (inviteRegex.test(content)) {
-    return { type: "inviteSpam", reason: "Pub / Lien d'invitation Discord non autorisé sur ce serveur" };
+    return {
+      type: "inviteSpam",
+      reason: "Pub / Lien d'invitation Discord non autorisé sur ce serveur",
+    };
   }
 
-  // 2. Détection de mentions massives (Mention Spam) — Plus tolérant pour les admins
+  // 2. Mentions massives (10 pour admin vs 5 pour membre)
   const totalMentions = message.mentions.users.size + message.mentions.roles.size;
   const mentionLimit = isAdmin ? 10 : 5;
   if (message.mentions.everyone || totalMentions >= mentionLimit) {
@@ -37,19 +40,25 @@ function analyzeMessage(message, isAdmin) {
     };
   }
 
-  // 3. Détection des retours à la ligne abusifs (Line-Break Spam) — 25 lignes pour un admin vs 12 pour un membre
+  // 3. Retours à la ligne abusifs (25 pour admin vs 12 pour membre)
   const lineBreaks = (content.match(/\n/g) || []).length;
   const lineLimit = isAdmin ? 25 : 12;
   if (lineBreaks >= lineLimit) {
-    return { type: "lineSpam", reason: `Abus de retours à la ligne (${lineBreaks} lignes)` };
+    return {
+      type: "lineSpam",
+      reason: `Abus de retours à la ligne (${lineBreaks} lignes)`,
+    };
   }
 
-  // 4. Détection du CAPS LOCK abusif (sur messages de plus de 15 caractères)
+  // 4. CAPS LOCK abusif (> 15 caractères)
   if (content.length > 15) {
     const capsCount = (content.match(/[A-ZÀ-Ý]/g) || []).length;
     const ratio = capsCount / content.length;
     if (ratio >= 0.8) {
-      return { type: "capsSpam", reason: `Abus de majuscules (${Math.round(ratio * 100)}%)` };
+      return {
+        type: "capsSpam",
+        reason: `Abus de majuscules (${Math.round(ratio * 100)}%)`,
+      };
     }
   }
 
@@ -57,15 +66,16 @@ function analyzeMessage(message, isAdmin) {
 }
 
 /**
- * Détection des messages identiques répétés d'affilée
+ * Détection des répétitions identiques (Supporte les caractères uniques "s", "f")
  */
 function isDuplicateSpam(userId, content, isAdmin) {
-  if (!content || content.length < 3) return false;
+  if (!content) return false;
+  const cleanContent = content.trim().toLowerCase();
 
   const now = Date.now();
   const userDup = duplicateCache.get(userId);
 
-  if (userDup && userDup.content === content && now - userDup.lastTime < 10000) {
+  if (userDup && userDup.content === cleanContent && now - userDup.lastTime < 10000) {
     userDup.count += 1;
     userDup.lastTime = now;
     duplicateCache.set(userId, userDup);
@@ -76,7 +86,7 @@ function isDuplicateSpam(userId, content, isAdmin) {
       return true;
     }
   } else {
-    duplicateCache.set(userId, { content, count: 1, lastTime: now });
+    duplicateCache.set(userId, { content: cleanContent, count: 1, lastTime: now });
   }
 
   return false;
@@ -90,22 +100,21 @@ function registerAntiSpam(client) {
     if (!guildConfig?.antiSpamEnabled) return;
     if (isWhitelisted(message.guild, guildConfig, message.author.id)) return;
 
-    // Vérification des privilèges Administrateur
     const isAdmin = message.member?.permissions.has(PermissionFlagsBits.Administrator);
 
-    // Seuil de flood dynamique (x2.5 pour les admins)
+    // Fenêtre élargie à 7s pour intercepter le spam manuel
     const baseThreshold =
       guildConfig?.thresholds?.antiSpam ??
       config.DEFAULT_THRESHOLDS?.antiSpam ??
       5;
-    const threshold = isAdmin ? Math.round(baseThreshold * 2.5) : baseThreshold;
-    const windowMs = config.ANTISPAM_WINDOW_MS || 3000;
+    const threshold = isAdmin ? baseThreshold + 2 : baseThreshold;
+    const windowMs = 7000;
 
     let triggered = false;
     let actionType = "antiSpam";
     let reason = "";
 
-    // A. Contrôle du contenu (Invites, Mentions, Caps, Lines)
+    // Vecteur A : Analyse du contenu (Invites, Mentions, Lines, Caps)
     const analysis = analyzeMessage(message, isAdmin);
     if (analysis) {
       triggered = true;
@@ -113,14 +122,14 @@ function registerAntiSpam(client) {
       reason = analysis.reason;
     }
 
-    // B. Contrôle de répétition exacte (Copier-coller en boucle)
+    // Vecteur B : Spam de messages identiques ("s", "f", etc.)
     if (!triggered && isDuplicateSpam(message.author.id, message.content, isAdmin)) {
       triggered = true;
       actionType = "duplicateSpam";
-      reason = "Répétition du même message plusieurs fois d'affilée";
+      reason = "Spam de messages identiques en boucle";
     }
 
-    // C. Contrôle de fréquence / Flood rapide (Rate Limit)
+    // Vecteur C : Rate Limit / Flood rapide
     const count = rateTracker.hit(
       message.guild.id,
       message.author.id,
@@ -134,21 +143,15 @@ function registerAntiSpam(client) {
       rateTracker.reset(message.guild.id, message.author.id, "antiSpam");
     }
 
-    // Execution de la sanction si un vecteur est déclenché
+    // Application de la sanction
     if (triggered) {
-      // Suppression du message fautif
       message.delete().catch(() => null);
 
-      // Si c'est du flood, purge automatique des messages récents
       if (actionType === "antiSpam") {
-        message.channel.bulkDelete(Math.min(count, 100)).catch(() => null);
+        message.channel.bulkDelete(Math.min(count || 5, 100)).catch(() => null);
       }
 
-      // Sanction adoucie pour les Admins (Mute / Timeout) sauf en cas de flood extrême (>= 25 msgs)
-      let customSanction = null;
-      if (isAdmin) {
-        customSanction = count >= 25 ? null : "timeout";
-      }
+      const customSanction = isAdmin ? "timeout" : null;
 
       await punish({
         guild: message.guild,
@@ -159,24 +162,22 @@ function registerAntiSpam(client) {
         details: {
           Salon: `#${message.channel.name}`,
           Statut: isAdmin ? "Administrateur" : "Membre",
-          "Dernier message": message.content.slice(0, 80) || "[Fichier/Embed]",
+          "Dernier message": message.content.slice(0, 80) || "[Texte]",
         },
         customSanction,
       });
     }
   });
 
-  // Nettoyage périodique de la mémoire pour préserver la RAM
+  // Nettoyage périodique du cache
   setInterval(() => {
     const now = Date.now();
     for (const [userId, data] of duplicateCache.entries()) {
-      if (now - data.lastTime > 15000) {
-        duplicateCache.delete(userId);
-      }
+      if (now - data.lastTime > 15000) duplicateCache.delete(userId);
     }
   }, 30000);
 
-  console.log("[AntiSpam Pro] Module multi-vecteurs avec gestion Admin intelligent actif.");
+  console.log("[AntiSpam Pro] Module complet multi-vecteurs actif.");
 }
 
 module.exports = { registerAntiSpam };
