@@ -38,29 +38,34 @@ module.exports = {
 
     const user = interaction.options.getUser("membre");
 
-    // --- CONTÔLES DE SÉCURITÉ ET HIÉRARCHIE ---
+    // --- CONTRÔLES DE SÉCURITÉ ET HIÉRARCHIE ---
+    const isExecutorServerOwner = interaction.user.id === interaction.guild.ownerId;
+    const isExecutorBotOwner = process.env.OWNER_ID && interaction.user.id === process.env.OWNER_ID;
+    const isExecutorBypass = isExecutorServerOwner || isExecutorBotOwner;
 
-    // 1. Protection du Propriétaire du serveur et du Bot
-    if (
-      user.id === interaction.guild.ownerId ||
-      (process.env.OWNER_ID && user.id === process.env.OWNER_ID)
-    ) {
-      return interaction.reply({
-        content: "❌ **Sécurité :** Vous ne pouvez pas modifier le statut d'un propriétaire.",
-        ephemeral: true,
-      });
-    }
+    // Si l'exécuteur N'EST PAS un Owner (Serveur ou Bot), on applique le filtrage strict
+    if (!isExecutorBypass) {
+      // 1. Protection des propriétaires contre les admins classiques
+      const isTargetOwner =
+        user.id === interaction.guild.ownerId ||
+        (process.env.OWNER_ID && user.id === process.env.OWNER_ID);
 
-    // 2. Interdiction de modifier son propre statut
-    if (user.id === interaction.user.id) {
-      return interaction.reply({
-        content: "❌ Vous ne pouvez pas modifier votre propre statut dans la whitelist.",
-        ephemeral: true,
-      });
-    }
+      if (isTargetOwner) {
+        return interaction.reply({
+          content: "❌ **Sécurité :** Seul le propriétaire du serveur ou du bot peut modifier le statut d'un propriétaire.",
+          ephemeral: true,
+        });
+      }
 
-    // 3. Hiérarchie des rôles (Sauf si l'exécuteur est le Propriétaire du serveur)
-    if (interaction.user.id !== interaction.guild.ownerId) {
+      // 2. Interdiction de modifier son propre statut pour un simple admin
+      if (user.id === interaction.user.id) {
+        return interaction.reply({
+          content: "❌ Vous ne pouvez pas modifier votre propre statut dans la whitelist.",
+          ephemeral: true,
+        });
+      }
+
+      // 3. Hiérarchie des rôles Discord
       const targetMember = await interaction.guild.members.fetch(user.id).catch(() => null);
       if (
         targetMember &&
