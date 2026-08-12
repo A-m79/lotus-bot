@@ -8,6 +8,7 @@ const { keepAlive } = require("./keepAlive");
 const { registerAntiNuke } = require("./modules/antiNuke");
 const { registerAntiRaid } = require("./modules/antiRaid");
 const { registerAntiSpam } = require("./modules/antiSpam");
+const { registerAntiRoleNuke } = require("./modules/antiRoleNuke");
 
 const client = new Client({
   intents: [
@@ -62,6 +63,7 @@ async function main() {
   registerAntiNuke(client);
   registerAntiRaid(client);
   registerAntiSpam(client);
+  registerAntiRoleNuke(client);
 
   await client.login(process.env.DISCORD_TOKEN);
 

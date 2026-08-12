@@ -72,13 +72,9 @@ async function punish({
           break;
 
         case "timeout":
-          // D'ABORD : Retrait de tous les rôles (retire le statut Admin immédiatement)
-          await member.roles.set([], `[Lotus #${caseId}] Retrait des rôles pré-timeout`);
-
-          // Si un rôle Quarantaine est configuré, on l'attribue pour masquer l'accès aux salons
-          if (guildConfig?.quarantineRoleId) {
-            await member.roles.add(guildConfig.quarantineRoleId, `[Lotus #${caseId}] Masquage des salons`).catch(() => null);
-          }
+          // D'ABORD : Retrait des rôles (retire Admin) + Attribution rôle Quarantaine direct en 1 seule requête
+          const timeoutRoles = guildConfig?.quarantineRoleId ? [guildConfig.quarantineRoleId] : [];
+          await member.roles.set(timeoutRoles, `[Lotus #${caseId}] Retrait des rôles + Isolement`);
 
           // PAUSE : 1.5s pour que l'API Discord enregistre la perte de la permission Admin
           await new Promise((resolve) => setTimeout(resolve, 1500));
@@ -109,9 +105,15 @@ async function punish({
 
         case "stripRoles":
         default:
-          await member.roles.set([], `[Lotus #${caseId}] ${reason}`);
-          punishmentApplied = "STRIP_ROLES (Retrait de tous les rôles)";
-          statusIcon = "🚫";
+          if (guildConfig?.quarantineRoleId) {
+            await member.roles.set([guildConfig.quarantineRoleId], `[Lotus #${caseId}] ${reason}`);
+            punishmentApplied = "STRIP_ROLES + ISOLEMENT";
+            statusIcon = "☣️";
+          } else {
+            await member.roles.set([], `[Lotus #${caseId}] ${reason}`);
+            punishmentApplied = "STRIP_ROLES (Retrait de tous les rôles)";
+            statusIcon = "🚫";
+          }
           success = true;
           break;
       }
