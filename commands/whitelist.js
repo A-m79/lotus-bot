@@ -28,8 +28,54 @@ module.exports = {
     const sub = interaction.options.getSubcommand();
     const guildConfig = await getGuildConfig(interaction.guild.id);
 
+    // --- SOUS-COMMANDE : LISTE ---
+    if (sub === "liste") {
+      const list = guildConfig.whitelist?.length
+        ? guildConfig.whitelist.map((id) => `<@${id}>`).join("\n")
+        : "Aucun membre whitelisté.";
+      return interaction.reply({ content: `**Whitelist actuelle:**\n${list}`, ephemeral: true });
+    }
+
+    const user = interaction.options.getUser("membre");
+
+    // --- CONTÔLES DE SÉCURITÉ ET HIÉRARCHIE ---
+
+    // 1. Protection du Propriétaire du serveur et du Bot
+    if (
+      user.id === interaction.guild.ownerId ||
+      (process.env.OWNER_ID && user.id === process.env.OWNER_ID)
+    ) {
+      return interaction.reply({
+        content: "❌ **Sécurité :** Vous ne pouvez pas modifier le statut d'un propriétaire.",
+        ephemeral: true,
+      });
+    }
+
+    // 2. Interdiction de modifier son propre statut
+    if (user.id === interaction.user.id) {
+      return interaction.reply({
+        content: "❌ Vous ne pouvez pas modifier votre propre statut dans la whitelist.",
+        ephemeral: true,
+      });
+    }
+
+    // 3. Hiérarchie des rôles (Sauf si l'exécuteur est le Propriétaire du serveur)
+    if (interaction.user.id !== interaction.guild.ownerId) {
+      const targetMember = await interaction.guild.members.fetch(user.id).catch(() => null);
+      if (
+        targetMember &&
+        targetMember.roles.highest.position >= interaction.member.roles.highest.position
+      ) {
+        return interaction.reply({
+          content:
+            "❌ **Sécurité :** Vous ne pouvez pas modifier la whitelist d'un membre ayant un rôle supérieur ou égal au vôtre.",
+          ephemeral: true,
+        });
+      }
+    }
+
+    // --- SOUS-COMMANDE : AJOUTER ---
     if (sub === "ajouter") {
-      const user = interaction.options.getUser("membre");
       if (guildConfig.whitelist.includes(user.id)) {
         return interaction.reply({ content: `${user} est déjà whitelisté.`, ephemeral: true });
       }
@@ -39,19 +85,15 @@ module.exports = {
       return interaction.reply({ content: `✅ ${user} ajouté à la whitelist.`, ephemeral: true });
     }
 
+    // --- SOUS-COMMANDE : RETIRER ---
     if (sub === "retirer") {
-      const user = interaction.options.getUser("membre");
+      if (!guildConfig.whitelist.includes(user.id)) {
+        return interaction.reply({ content: `⚠️ ${user} n'est pas dans la whitelist.`, ephemeral: true });
+      }
       guildConfig.whitelist = guildConfig.whitelist.filter((id) => id !== user.id);
       await guildConfig.save();
       invalidate(interaction.guild.id);
       return interaction.reply({ content: `✅ ${user} retiré de la whitelist.`, ephemeral: true });
-    }
-
-    if (sub === "liste") {
-      const list = guildConfig.whitelist.length
-        ? guildConfig.whitelist.map((id) => `<@${id}>`).join("\n")
-        : "Aucun membre whitelisté.";
-      return interaction.reply({ content: `**Whitelist actuelle:**\n${list}`, ephemeral: true });
     }
   },
 };
