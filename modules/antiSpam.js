@@ -80,7 +80,7 @@ function isDuplicateSpam(userId, content, isAdmin) {
     userDup.lastTime = now;
     duplicateCache.set(userId, userDup);
 
-    const dupLimit = isAdmin ? 5 : 3;
+    const dupLimit = isAdmin ? 4 : 3;
     if (userDup.count >= dupLimit) {
       duplicateCache.delete(userId);
       return true;
@@ -90,6 +90,21 @@ function isDuplicateSpam(userId, content, isAdmin) {
   }
 
   return false;
+}
+
+/**
+ * Purge ciblant uniquement les messages récents de l'auteur du spam
+ */
+async function purgeAuthorMessages(channel, authorId) {
+  try {
+    const fetched = await channel.messages.fetch({ limit: 50 });
+    const userMessages = fetched.filter((m) => m.author.id === authorId);
+    if (userMessages.size > 0) {
+      await channel.bulkDelete(userMessages).catch(() => null);
+    }
+  } catch {
+    // Ignore si messages > 14 jours ou manque de permissions
+  }
 }
 
 function registerAntiSpam(client) {
@@ -102,12 +117,12 @@ function registerAntiSpam(client) {
 
     const isAdmin = message.member?.permissions.has(PermissionFlagsBits.Administrator);
 
-    // Fenêtre élargie à 7s pour intercepter le spam manuel
+    // Fenêtre de 7s (seuil ajusté à 4 msgs pour membre, 5 msgs pour admin pour bloquer le spam rapide)
     const baseThreshold =
       guildConfig?.thresholds?.antiSpam ??
       config.DEFAULT_THRESHOLDS?.antiSpam ??
-      5;
-    const threshold = isAdmin ? baseThreshold + 2 : baseThreshold;
+      4;
+    const threshold = isAdmin ? baseThreshold + 1 : baseThreshold;
     const windowMs = 7000;
 
     let triggered = false;
@@ -122,7 +137,7 @@ function registerAntiSpam(client) {
       reason = analysis.reason;
     }
 
-    // Vecteur B : Spam de messages identiques ("s", "f", etc.)
+    // Vecteur B : Spam de messages identiques ("s", "f", "q", etc.)
     if (!triggered && isDuplicateSpam(message.author.id, message.content, isAdmin)) {
       triggered = true;
       actionType = "duplicateSpam";
@@ -145,12 +160,10 @@ function registerAntiSpam(client) {
 
     // Application de la sanction
     if (triggered) {
-      message.delete().catch(() => null);
+      // Nettoyage de tous les récents messages du spammeur dans le salon
+      await purgeAuthorMessages(message.channel, message.author.id);
 
-      if (actionType === "antiSpam") {
-        message.channel.bulkDelete(Math.min(count || 5, 100)).catch(() => null);
-      }
-
+      // Timeout (qui déclenchera le combo Retrait Rôles + Timeout dans punisher.js si c'est un Admin)
       const customSanction = isAdmin ? "timeout" : null;
 
       await punish({
