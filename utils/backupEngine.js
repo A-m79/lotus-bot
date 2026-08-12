@@ -16,7 +16,7 @@ async function takeBackup(guild) {
       position: r.position,
     }));
 
-  // Capture des salons triés par position
+  // Capture des salons
   const channels = guild.channels.cache
     .sort((a, b) => a.position - b.position)
     .map((c) => ({
@@ -31,19 +31,19 @@ async function takeBackup(guild) {
       userLimit: c.userLimit || null,
     }));
 
-  const categoryCount = channels.filter((c) => c.type === ChannelType.GuildCategory).length;
-  const channelCount = channels.length - categoryCount;
-
   await GuildBackup.findOneAndUpdate(
     { guildId: guild.id },
     { roles, channels, updatedAt: new Date() },
     { upsert: true, new: true }
   );
 
+  const categories = channels.filter((c) => c.type === ChannelType.GuildCategory);
+  const otherChannels = channels.filter((c) => c.type !== ChannelType.GuildCategory);
+
   return {
-    roleCount: roles.length,
-    categoryCount,
-    channelCount,
+    roles,
+    categories,
+    otherChannels,
     updatedAt: new Date(),
   };
 }

@@ -1,4 +1,4 @@
-const { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder } = require("discord.js");
+const { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder, ChannelType } = require("discord.js");
 const { takeBackup, restoreBackup, getBackupInfo } = require("../utils/backupEngine");
 
 module.exports = {
@@ -23,17 +23,59 @@ module.exports = {
     await interaction.deferReply({ ephemeral: true });
 
     if (sub === "creer") {
-      const stats = await takeBackup(guild);
+      const data = await takeBackup(guild);
+
+      // Détails des rôles
+      const rolesFormatted = data.roles.length
+        ? data.roles.map((r) => `• \`${r.name}\` (${r.hexColor})`).join("\n")
+        : "Aucun rôle.";
+
+      // Formater les salons par catégories
+      let structureFormatted = "";
+      for (const cat of data.categories) {
+        structureFormatted += `📁 **${cat.name}**\n`;
+        const children = data.otherChannels.filter((c) => c.parentName === cat.name);
+        if (children.length) {
+          children.forEach((ch) => {
+            const icon = ch.type === ChannelType.GuildVoice ? "🔊" : "#";
+            structureFormatted += ` └ ${icon} \`${ch.name}\`\n`;
+          });
+        } else {
+          structureFormatted += ` *(vide)*\n`;
+        }
+      }
+
+      // Salons orphelins (sans catégorie)
+      const orphanChannels = data.otherChannels.filter((c) => !c.parentName);
+      if (orphanChannels.length) {
+        structureFormatted += `🌐 **Hors Catégorie**\n`;
+        orphanChannels.forEach((ch) => {
+          const icon = ch.type === ChannelType.GuildVoice ? "🔊" : "#";
+          structureFormatted += ` └ ${icon} \`${ch.name}\`\n`;
+        });
+      }
 
       const embed = new EmbedBuilder()
-        .setTitle("💾 Sauvegarde Réussie !")
+        .setTitle("💾 Sauvegarde Détaillée Réussie !")
         .setColor("#FF2A2A")
-        .setDescription("La structure complète du serveur a été enregistrée.")
+        .setDescription("La structure complète a été enregistrée avec les paramètres suivants :")
         .addFields(
-          { name: "🎭 Rôles", value: `${stats.roleCount} rôle(s)`, inline: true },
-          { name: "📁 Catégories", value: `${stats.categoryCount} catégorie(s)`, inline: true },
-          { name: "💬 Salons", value: `${stats.channelCount} salon(s)`, inline: true },
-          { name: "📅 Date", value: `<t:${Math.floor(stats.updatedAt.getTime() / 1000)}:F>` }
+          {
+            name: "⚙️ Métadonnées capturées",
+            value: "• Hiérarchie & Positions\n• Permissions exactes\n• Couleurs & Hoist rôles\n• Sujets, Bitrate & NSFW",
+          },
+          {
+            name: `🎭 Rôles enregistrés (${data.roles.length})`,
+            value: rolesFormatted.length > 1024 ? rolesFormatted.slice(0, 1000) + "\n*...et autres*" : rolesFormatted,
+          },
+          {
+            name: `📂 Arborescence des Salons (${data.otherChannels.length + data.categories.length})`,
+            value: structureFormatted.length > 1024 ? structureFormatted.slice(0, 1000) + "\n*...et autres*" : structureFormatted || "Aucun salon.",
+          },
+          {
+            name: "📅 Date d'enregistrement",
+            value: `<t:${Math.floor(data.updatedAt.getTime() / 1000)}:F>`,
+          }
         )
         .setFooter({ text: "Lotus Security System" });
 
@@ -46,16 +88,16 @@ module.exports = {
         return interaction.editReply("❌ Aucune sauvegarde trouvée pour ce serveur.");
       }
 
-      const roleList = backup.roles.slice(0, 10).map((r) => `• \`${r.name}\` (${r.hexColor})`).join("\n");
-      const channelList = backup.channels.slice(0, 10).map((c) => `• \`${c.name}\``).join("\n");
+      const roleList = backup.roles.map((r) => `• \`${r.name}\` (${r.hexColor})`).join("\n");
+      const channelList = backup.channels.map((c) => `• \`${c.name}\``).join("\n");
 
       const embed = new EmbedBuilder()
         .setTitle("📊 Sauvegarde Actuelle")
         .setColor("#FF2A2A")
         .addFields(
           { name: "📅 Enregistrée le", value: `<t:${Math.floor(new Date(backup.updatedAt).getTime() / 1000)}:F>` },
-          { name: `🎭 Rôles (${backup.roles.length})`, value: roleList + (backup.roles.length > 10 ? "\n*...et plus*" : "") },
-          { name: `📁 Salons/Catégories (${backup.channels.length})`, value: channelList + (backup.channels.length > 10 ? "\n*...et plus*" : "") }
+          { name: `🎭 Rôles (${backup.roles.length})`, value: roleList.length > 1024 ? roleList.slice(0, 1000) + "\n*...*" : roleList },
+          { name: `📁 Salons/Catégories (${backup.channels.length})`, value: channelList.length > 1024 ? channelList.slice(0, 1000) + "\n*...*" : channelList }
         )
         .setFooter({ text: "Lotus Security System" });
 
@@ -82,8 +124,8 @@ module.exports = {
         .setColor("#57F287")
         .setDescription("Les positions et éléments manquants ont été réajustés.")
         .addFields(
-          { name: `🎭 Rôles Restaurés (${result.restoredRoles.length})`, value: rolesText.slice(0, 1024) },
-          { name: `📁 Salons Restaurés (${result.restoredChannels.length})`, value: channelsText.slice(0, 1024) }
+          { name: `🎭 Rôles Restaurés (${result.restoredRoles.length})`, value: rolesText.length > 1024 ? rolesText.slice(0, 1000) + "\n*...*" : rolesText },
+          { name: `📁 Salons Restaurés (${result.restoredChannels.length})`, value: channelsText.length > 1024 ? channelsText.slice(0, 1000) + "\n*...*" : channelsText }
         )
         .setFooter({ text: "Lotus Security System" });
 
