@@ -1,3 +1,4 @@
+const { PermissionFlagsBits } = require("discord.js");
 const config = require("../config/config");
 const rateTracker = require("../utils/rateTracker");
 const { getGuildConfig } = require("../utils/configCache");
@@ -14,9 +15,9 @@ function isWhitelisted(guild, guildConfig, userId) {
 }
 
 /**
- * Analyse multicouche du contenu du message
+ * Analyse multicouche du contenu du message (seuils adaptés si Admin)
  */
-function analyzeMessage(message) {
+function analyzeMessage(message, isAdmin) {
   const content = message.content;
   if (!content) return null;
 
@@ -26,18 +27,20 @@ function analyzeMessage(message) {
     return { type: "inviteSpam", reason: "Pub / Lien d'invitation Discord non autorisé sur ce serveur" };
   }
 
-  // 2. Détection de mentions massives (Mention Spam)
+  // 2. Détection de mentions massives (Mention Spam) — Plus tolérant pour les admins
   const totalMentions = message.mentions.users.size + message.mentions.roles.size;
-  if (message.mentions.everyone || totalMentions >= 5) {
+  const mentionLimit = isAdmin ? 10 : 5;
+  if (message.mentions.everyone || totalMentions >= mentionLimit) {
     return {
       type: "mentionSpam",
       reason: `Spam de mentions (${totalMentions} mentions)`,
     };
   }
 
-  // 3. Détection des retours à la ligne abusifs (Line-Break Spam)
+  // 3. Détection des retours à la ligne abusifs (Line-Break Spam) — 25 lignes pour un admin vs 12 pour un membre
   const lineBreaks = (content.match(/\n/g) || []).length;
-  if (lineBreaks >= 12) {
+  const lineLimit = isAdmin ? 25 : 12;
+  if (lineBreaks >= lineLimit) {
     return { type: "lineSpam", reason: `Abus de retours à la ligne (${lineBreaks} lignes)` };
   }
 
@@ -56,7 +59,7 @@ function analyzeMessage(message) {
 /**
  * Détection des messages identiques répétés d'affilée
  */
-function isDuplicateSpam(userId, content) {
+function isDuplicateSpam(userId, content, isAdmin) {
   if (!content || content.length < 3) return false;
 
   const now = Date.now();
@@ -67,7 +70,8 @@ function isDuplicateSpam(userId, content) {
     userDup.lastTime = now;
     duplicateCache.set(userId, userDup);
 
-    if (userDup.count >= 3) {
+    const dupLimit = isAdmin ? 5 : 3;
+    if (userDup.count >= dupLimit) {
       duplicateCache.delete(userId);
       return true;
     }
@@ -86,22 +90,23 @@ function registerAntiSpam(client) {
     if (!guildConfig?.antiSpamEnabled) return;
     if (isWhitelisted(message.guild, guildConfig, message.author.id)) return;
 
-    const threshold =
+    // Vérification des privilèges Administrateur
+    const isAdmin = message.member?.permissions.has(PermissionFlagsBits.Administrator);
+
+    // Seuil de flood dynamique (x2.5 pour les admins)
+    const baseThreshold =
       guildConfig?.thresholds?.antiSpam ??
       config.DEFAULT_THRESHOLDS?.antiSpam ??
       5;
+    const threshold = isAdmin ? Math.round(baseThreshold * 2.5) : baseThreshold;
     const windowMs = config.ANTISPAM_WINDOW_MS || 3000;
 
     let triggered = false;
     let actionType = "antiSpam";
     let reason = "";
-    const details = {
-      Salon: `#${message.channel.name}`,
-      "Dernier message": message.content.slice(0, 80) || "[Fichier/Embed]",
-    };
 
     // A. Contrôle du contenu (Invites, Mentions, Caps, Lines)
-    const analysis = analyzeMessage(message);
+    const analysis = analyzeMessage(message, isAdmin);
     if (analysis) {
       triggered = true;
       actionType = analysis.type;
@@ -109,7 +114,7 @@ function registerAntiSpam(client) {
     }
 
     // B. Contrôle de répétition exacte (Copier-coller en boucle)
-    if (!triggered && isDuplicateSpam(message.author.id, message.content)) {
+    if (!triggered && isDuplicateSpam(message.author.id, message.content, isAdmin)) {
       triggered = true;
       actionType = "duplicateSpam";
       reason = "Répétition du même message plusieurs fois d'affilée";
@@ -139,13 +144,24 @@ function registerAntiSpam(client) {
         message.channel.bulkDelete(Math.min(count, 100)).catch(() => null);
       }
 
+      // Sanction adoucie pour les Admins (Mute / Timeout) sauf en cas de flood extrême (>= 25 msgs)
+      let customSanction = null;
+      if (isAdmin) {
+        customSanction = count >= 25 ? null : "timeout";
+      }
+
       await punish({
         guild: message.guild,
         guildConfig,
         executorId: message.author.id,
         actionType,
-        reason,
-        details,
+        reason: isAdmin ? `[Admin Intelligentsia] ${reason}` : reason,
+        details: {
+          Salon: `#${message.channel.name}`,
+          Statut: isAdmin ? "Administrateur" : "Membre",
+          "Dernier message": message.content.slice(0, 80) || "[Fichier/Embed]",
+        },
+        customSanction,
       });
     }
   });
@@ -160,7 +176,7 @@ function registerAntiSpam(client) {
     }
   }, 30000);
 
-  console.log("[AntiSpam Pro] Module multi-vecteurs actif.");
+  console.log("[AntiSpam Pro] Module multi-vecteurs avec gestion Admin intelligent actif.");
 }
 
 module.exports = { registerAntiSpam };
