@@ -2,6 +2,9 @@ const { EmbedBuilder, PermissionFlagsBits } = require("discord.js");
 const config = require("../config/config");
 const SecurityLog = require("../models/SecurityLog");
 
+// Verrou en mémoire pour éviter d'exécuter des sanctions/MP en double lors d'une rafale de messages
+const activePunishments = new Set();
+
 function generateCaseId() {
   return `CASE-${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
 }
@@ -15,6 +18,14 @@ async function punish({
   details = {},
   customSanction = null,
 }) {
+  // Ignorer si une sanction est déjà en cours d'application pour cet utilisateur
+  if (activePunishments.has(executorId)) {
+    return null;
+  }
+
+  activePunishments.add(executorId);
+  setTimeout(() => activePunishments.delete(executorId), 10000); // Libération après 10s
+
   const caseId = generateCaseId();
   const punishment = customSanction || guildConfig?.punishment || config.DEFAULT_PUNISHMENT;
 
@@ -63,6 +74,11 @@ async function punish({
         case "timeout":
           // D'ABORD : Retrait de tous les rôles (retire le statut Admin immédiatement)
           await member.roles.set([], `[Lotus #${caseId}] Retrait des rôles pré-timeout`);
+
+          // Si un rôle Quarantaine est configuré, on l'attribue pour masquer l'accès aux salons
+          if (guildConfig?.quarantineRoleId) {
+            await member.roles.add(guildConfig.quarantineRoleId, `[Lotus #${caseId}] Masquage des salons`).catch(() => null);
+          }
 
           // PAUSE : 1.5s pour que l'API Discord enregistre la perte de la permission Admin
           await new Promise((resolve) => setTimeout(resolve, 1500));
