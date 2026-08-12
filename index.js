@@ -7,6 +7,7 @@ const { connectDatabase } = require("./database/connect");
 const { keepAlive } = require("./keepAlive");
 const { registerAntiNuke } = require("./modules/antiNuke");
 const { registerAntiRaid } = require("./modules/antiRaid");
+const { registerAntiSpam } = require("./modules/antiSpam");
 
 const client = new Client({
   intents: [
@@ -60,7 +61,7 @@ async function main() {
   // Modules de protection
   registerAntiNuke(client);
   registerAntiRaid(client);
-  // registerAntiSpam(client);   // à venir
+  registerAntiSpam(client);
 
   await client.login(process.env.DISCORD_TOKEN);
 
