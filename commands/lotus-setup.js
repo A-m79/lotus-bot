@@ -34,7 +34,7 @@ module.exports = {
         }
       }
 
-      // 3. Création de la catégorie de sécurité
+      // 3. Création ou récupération de la catégorie SÉCURITÉ LOTUS
       let category = guild.channels.cache.find(
         (c) => c.type === ChannelType.GuildCategory && c.name === "SÉCURITÉ LOTUS"
       );
@@ -45,9 +45,13 @@ module.exports = {
         });
       }
 
-      // 4. Création des salons logs et alertes
+      // 4. Salons logs et alertes : création ou déplacement sous la catégorie SÉCURITÉ LOTUS
       let logChannel = guild.channels.cache.find((c) => c.name === "logs-lotus");
-      if (!logChannel) {
+      if (logChannel) {
+        if (logChannel.parentId !== category.id) {
+          await logChannel.setParent(category.id).catch(() => null);
+        }
+      } else {
         logChannel = await guild.channels.create({
           name: "logs-lotus",
           type: ChannelType.GuildText,
@@ -56,7 +60,11 @@ module.exports = {
       }
 
       let alertChannel = guild.channels.cache.find((c) => c.name === "alertes-lotus");
-      if (!alertChannel) {
+      if (alertChannel) {
+        if (alertChannel.parentId !== category.id) {
+          await alertChannel.setParent(category.id).catch(() => null);
+        }
+      } else {
         alertChannel = await guild.channels.create({
           name: "alertes-lotus",
           type: ChannelType.GuildText,
@@ -64,7 +72,7 @@ module.exports = {
         });
       }
 
-      // 5. Enregistrement dans MongoDB
+      // 5. Force la mise à jour des IDs exacts dans MongoDB
       await GuildConfig.findOneAndUpdate(
         { guildId: guild.id },
         {
@@ -77,8 +85,8 @@ module.exports = {
 
       const embed = new EmbedBuilder()
         .setColor("#00FF7F")
-        .setTitle("⚙️ Configuration Lotus Finalisée")
-        .setDescription("Le système d'isolation et d'archivage des alertes a été initialisé.")
+        .setTitle("⚙️ Configuration Lotus Reprogrammée")
+        .setDescription("Tous les salons de logs et le rôle d'isolation ont été regroupés sous la catégorie de sécurité.")
         .addFields(
           { name: "📁 Catégorie", value: `${category}`, inline: true },
           { name: "📜 Salon Logs", value: `${logChannel}`, inline: true },
