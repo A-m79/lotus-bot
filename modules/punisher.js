@@ -45,8 +45,6 @@ async function punish({
   // 2. Exécution de la sanction
   try {
     if (member && canManageTarget) {
-      const isTargetAdmin = member.permissions.has(PermissionFlagsBits.Administrator);
-
       switch (punishment) {
         case "ban":
           await guild.members.ban(executorId, { reason: `[Lotus #${caseId}] ${reason}` });
@@ -63,17 +61,16 @@ async function punish({
           break;
 
         case "timeout":
-          if (isTargetAdmin) {
-            await member.roles.set([], `[Lotus #${caseId}] Retrait rôles Admin pré-timeout`);
-            await new Promise((resolve) => setTimeout(resolve, 1000));
-            await member.timeout(24 * 60 * 60 * 1000, `[Lotus #${caseId}] ${reason}`);
-            punishmentApplied = "STRIP_ROLES + TIMEOUT (Admin neutralisé 24h)";
-            statusIcon = "☣️";
-          } else {
-            await member.timeout(24 * 60 * 60 * 1000, `[Lotus #${caseId}] ${reason}`);
-            punishmentApplied = "TIMEOUT (Exclusion temporaire 24h)";
-            statusIcon = "⏳";
-          }
+          // D'ABORD : Retrait de tous les rôles (retire le statut Admin immédiatement)
+          await member.roles.set([], `[Lotus #${caseId}] Retrait des rôles pré-timeout`);
+
+          // PAUSE : 1.5s pour que l'API Discord enregistre la perte de la permission Admin
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+
+          // ENSUITE : Application du Timeout
+          await member.timeout(24 * 60 * 60 * 1000, `[Lotus #${caseId}] ${reason}`);
+          punishmentApplied = "STRIP_ROLES + TIMEOUT (24h)";
+          statusIcon = "☣️";
           success = true;
           break;
 
@@ -117,7 +114,7 @@ async function punish({
     statusIcon = "⚠️";
   }
 
-  // 3. Notification MP (DM) à la cible
+  // 3. Notification MP (DM) uniquement si la sanction s'est appliquée sans erreur
   if (targetUser && !targetUser.bot && success) {
     const dmEmbed = new EmbedBuilder()
       .setColor("#FF2A2A")
@@ -134,7 +131,7 @@ async function punish({
     await targetUser.send({ embeds: [dmEmbed] }).catch(() => null);
   }
 
-  // 4. Historisation dans MongoDB
+  // 4. Historisation MongoDB
   await SecurityLog.create({
     caseId,
     guildId: guild.id,
@@ -146,7 +143,7 @@ async function punish({
     timestamp: new Date(),
   }).catch((err) => console.error("[SecurityLog DB Error]:", err));
 
-  // 5. Envoi des logs dans #logs-lotus (logChannelId) ou fallback sur #alert (alertChannelId)
+  // 5. Logs salon (#logs-lotus ou #alert)
   const targetChannelId = guildConfig?.logChannelId || guildConfig?.alertChannelId;
 
   if (targetChannelId) {
