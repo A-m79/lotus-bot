@@ -39,7 +39,7 @@ async function triggerLockdown(guild, guildConfig, joinCount) {
   }
 
   guildConfig.lockdownActive = true;
-  await guildConfig.save();
+  await guildConfig.save().catch(() => null);
 
   await SecurityLog.create({
     guildId: guild.id,
@@ -47,23 +47,32 @@ async function triggerLockdown(guild, guildConfig, joinCount) {
     executorId: "system",
     details: { joinCount, windowMs: config.ANTIRAID.JOIN_WINDOW_MS },
     punishmentApplied: config.ANTIRAID.LOCKDOWN_ON_TRIGGER ? "lockdown" : "alert-only",
-  });
+  }).catch(() => null);
 
-  if (guildConfig.alertChannelId) {
-    const channel = await guild.channels.fetch(guildConfig.alertChannelId).catch(() => null);
+  const targetChannelId = guildConfig.alertChannelId || guildConfig.logChannelId;
+  if (targetChannelId) {
+    const channel = await guild.channels.fetch(targetChannelId).catch(() => null);
     if (channel?.isTextBased()) {
       const embed = new EmbedBuilder()
-        .setColor(config.EMBED_COLOR_ALERT)
-        .setTitle("🚨 Raid détecté")
+        .setColor(config.EMBED_COLOR_ALERT || "#FF0000")
+        .setAuthor({
+          name: "LOTUS SECURITY SYSTEM",
+          iconURL: guild.iconURL({ dynamic: true }) || undefined,
+        })
+        .setTitle("🚨 RAID DÉTECTÉ — SERVEUR SOUS PROTECTION")
         .setDescription(
-          `${joinCount} arrivées suspectes en moins de ${config.ANTIRAID.JOIN_WINDOW_MS / 1000}s.\n` +
+          `> **Détection :** \`${joinCount} arrivées suspectes\` en moins de \`${config.ANTIRAID.JOIN_WINDOW_MS / 1000}s\`.\n` +
             (config.ANTIRAID.LOCKDOWN_ON_TRIGGER
-              ? "Lockdown automatique activé. Utilise `/lotus-panic off` une fois la menace passée."
-              : "Lockdown automatique désactivé — vérifie manuellement.")
+              ? "> **Statut :** Lockdown automatique activé. Écriture fermée aux membres. Utilise `/lotus-panic off` une fois la menace passée."
+              : "> **Statut :** Lockdown automatique désactivé — vérification manuelle requise.")
         )
+        .setFooter({ text: "Lotus Security System • Module Anti-Raid" })
         .setTimestamp();
 
-      await channel.send({ embeds: [embed] }).catch(() => null);
+      await channel.send({
+        content: "🚨 @here **ALERTE MAJEURE : RAID EN COURS DÉTECTÉ !**",
+        embeds: [embed],
+      }).catch(() => null);
     }
   }
 }
@@ -73,7 +82,7 @@ function registerAntiRaid(client) {
     if (member.user.bot) return; // les bots sont gérés par l'anti-nuke (botAdd)
 
     const guildConfig = await getGuildConfig(member.guild.id);
-    if (!guildConfig.antiRaidEnabled) return;
+    if (!guildConfig?.antiRaidEnabled) return;
 
     const now = Date.now();
     const timestamps = (joinTimestamps.get(member.guild.id) || []).filter(
@@ -82,8 +91,7 @@ function registerAntiRaid(client) {
     timestamps.push(now);
     joinTimestamps.set(member.guild.id, timestamps);
 
-    // On ne déclenche que si le compte lui-même a un score de suspicion notable,
-    // pour éviter de lockdown le serveur lors d'un pic de joins légitimes (ex: partenariat)
+    // On ne déclenche que si le compte lui-même a un score de suspicion notable
     const score = suspicionScore(member);
 
     if (timestamps.length >= config.ANTIRAID.JOIN_THRESHOLD && score >= 1) {

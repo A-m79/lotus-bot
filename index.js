@@ -5,6 +5,8 @@ const { Client, GatewayIntentBits, Partials, Collection } = require("discord.js"
 
 const { connectDatabase } = require("./database/connect");
 const { keepAlive } = require("./keepAlive");
+const { getGuildConfig } = require("./utils/configCache");
+
 const { registerAntiNuke } = require("./modules/antiNuke");
 const { registerAntiRaid } = require("./modules/antiRaid");
 const { registerAntiSpam } = require("./modules/antiSpam");
@@ -38,6 +40,21 @@ client.on("interactionCreate", async (interaction) => {
 
   const command = client.commands.get(interaction.commandName);
   if (!command) return;
+
+  // --- Restriction stricte Whitelist / Owners ---
+  if (interaction.guildId) {
+    const guildConfig = await getGuildConfig(interaction.guildId).catch(() => null);
+    const isOwner = interaction.user.id === interaction.guild?.ownerId;
+    const isBotOwner = process.env.OWNER_ID && interaction.user.id === process.env.OWNER_ID;
+    const isWhitelisted = guildConfig?.whitelist?.includes(interaction.user.id);
+
+    if (!isOwner && !isBotOwner && !isWhitelisted) {
+      return interaction.reply({
+        content: "❌ Seuls les membres figurant sur la **Whitelist** peuvent exécuter les commandes Lotus.",
+        ephemeral: true,
+      });
+    }
+  }
 
   try {
     await command.execute(interaction);
