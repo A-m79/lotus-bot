@@ -1,7 +1,7 @@
 const { punish } = require("./punisher");
 const { getGuildConfig } = require("../utils/configCache");
+const { EmbedBuilder } = require("discord.js");
 
-// Patterns de pseudos suspects (Spam, Crypto, Liens)
 const SUSPICIOUS_PATTERNS = [
   /telegram/i,
   /t\.me\//i,
@@ -26,7 +26,6 @@ function registerAltDetection(client) {
     const { guild, user } = member;
     const guildConfig = await getGuildConfig(guild.id).catch(() => null);
 
-    // Module activable/désactivable via config (activé par défaut si non spécifié)
     if (guildConfig?.altDetectionEnabled === false) return;
     if (isWhitelisted(guild, guildConfig, user.id)) return;
 
@@ -35,53 +34,67 @@ function registerAltDetection(client) {
     const accountAgeDays = Math.floor(accountAgeMs / (1000 * 60 * 60 * 24));
     const accountAgeHours = Math.floor(accountAgeMs / (1000 * 60 * 60));
 
-    // Seuil de jours minimum configurable (7 jours par défaut)
-    const minAgeDays = guildConfig?.thresholds?.altMinAgeDays ?? 7;
-
-    let riskScore = 0;
     const flags = [];
+    let isUltraRecent = accountAgeDays < 14; // Quarantaine directe si < 14 jours
 
-    // 1. Âge du compte
-    if (accountAgeDays < minAgeDays) {
-      riskScore += 50;
-      flags.push(`Compte trop récent (${accountAgeHours < 24 ? `${accountAgeHours}h` : `${accountAgeDays}j`})`);
+    if (accountAgeDays < 30) {
+      flags.push(`Compte récent (${accountAgeDays}j)`);
     }
-
-    // 2. Pas d'avatar personnalisé
     if (!user.avatar) {
-      riskScore += 25;
       flags.push("Avatar par défaut");
     }
-
-    // 3. Pseudo ou Nom d'affichage suspect
     const fullName = `${user.username} ${user.displayName || ""}`;
     if (SUSPICIOUS_PATTERNS.some((p) => p.test(fullName))) {
-      riskScore += 40;
-      flags.push("Pseudo suspect (Lien / Pub / Crypto)");
+      flags.push("Pseudo suspect");
     }
 
-    // Sanction si le score de risque est supérieur ou égal à 50
-    if (riskScore >= 50) {
-      const reason = `Compte suspect / Alt détecté (${flags.join(", ")})`;
-
-      await punish({
+    // 1. CAS GRAVE : Compte < 14 jours -> Quarantaine directe
+    if (isUltraRecent) {
+      return punish({
         guild,
         guildConfig,
         executorId: user.id,
         actionType: "ALT_DETECTION",
-        reason,
+        reason: `Compte extrêmement récent (${accountAgeDays}j / <14j)`,
         details: {
           "Création": `${accountAgeDays}j (${accountAgeHours}h)`,
           "Avatar": user.avatar ? "Personnalisé" : "Par défaut",
-          "Score de risque": `${riskScore}/100`,
           "Indicateurs": flags.join(" | "),
         },
-        customSanction: guildConfig?.altPunishment || null,
+        customSanction: "quarantine",
       });
+    }
+
+    // 2. CAS SUSPECT : Compte entre 14 et 30 jours, avatar par défaut, etc. -> Avertissement aux staff
+    if (flags.length > 0) {
+      const targetChannelId = guildConfig?.alertChannelId || guildConfig?.logChannelId;
+      if (!targetChannelId) return;
+
+      const channel = await guild.channels.fetch(targetChannelId).catch(() => null);
+      if (!channel?.isTextBased()) return;
+
+      const embed = new EmbedBuilder()
+        .setColor("#FFCC00")
+        .setAuthor({
+          name: `AVERTISSEMENT SUSPICION • ${guild.name.toUpperCase()}`,
+          iconURL: guild.iconURL({ dynamic: true }) || undefined,
+        })
+        .setTitle(`👀 Nouveau Membre Suspect — ${user.tag}`)
+        .setDescription(`Un membre est arrivé mais présente des critères suspects. Aucune sanction automatique n'a été appliquée.`)
+        .addFields(
+          { name: "👤 Utilisateur", value: `${user}\n\`ID: ${user.id}\``, inline: true },
+          { name: "📅 Ancienneté", value: `\`${accountAgeDays} jour(s)\``, inline: true },
+          { name: "🔍 Signalements", value: `\`${flags.join(" | ")}\``, inline: false }
+        )
+        .setThumbnail(user.displayAvatarURL({ dynamic: true, size: 256 }))
+        .setFooter({ text: "Lotus Security • Module de Suspicion" })
+        .setTimestamp();
+
+      await channel.send({ embeds: [embed] }).catch(() => null);
     }
   });
 
-  console.log("[Alt Detection Pro] Module d'analyse à l'arrivée actif.");
+  console.log("[Alt Detection Pro] Module de détection et d'avertissement actif.");
 }
 
 module.exports = { registerAltDetection };
