@@ -1,4 +1,4 @@
-const { EmbedBuilder } = require("discord.js");
+const { EmbedBuilder, PermissionFlagsBits, ChannelType } = require("discord.js");
 const config = require("../config/config");
 const SecurityLog = require("../models/SecurityLog");
 
@@ -6,8 +6,10 @@ const activePunishments = new Set();
 
 const SEVERE_ACTIONS = [
   "CHANNEL_DELETE",
+  "CHANNEL_CREATE",
   "CHANNEL_UPDATE",
   "ROLE_DELETE",
+  "ROLE_CREATE",
   "MEMBER_BAN",
   "MEMBER_KICK",
   "WEBHOOK_CREATE",
@@ -35,6 +37,79 @@ function generateCaseId() {
   return `CASE-${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
 }
 
+/**
+ * Assure l'existence du Rôle et du Salon de Quarantaine
+ */
+async function ensureQuarantineSetup(guild) {
+  let quarantineRole = guild.roles.cache.find((r) => r.name === "Lotus Quarantaine");
+  if (!quarantineRole) {
+    quarantineRole = await guild.roles.create({
+      name: "Lotus Quarantaine",
+      color: "#2f3136",
+      reason: "Création automatique du rôle de quarantaine Lotus Security",
+    }).catch(() => null);
+  }
+
+  let quarantineChannel = guild.channels.cache.find(
+    (c) => c.name === "🔒-quarantaine" && c.type === ChannelType.GuildText
+  );
+
+  if (!quarantineChannel && quarantineRole) {
+    quarantineChannel = await guild.channels.create({
+      name: "🔒-quarantaine",
+      type: ChannelType.GuildText,
+      permissionOverwrites: [
+        {
+          id: guild.id,
+          deny: [PermissionFlagsBits.ViewChannel],
+        },
+        {
+          id: quarantineRole.id,
+          allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory],
+          deny: [
+            PermissionFlagsBits.SendMessages,
+            PermissionFlagsBits.AddReactions,
+            PermissionFlagsBits.CreatePublicThreads,
+            PermissionFlagsBits.CreatePrivateThreads,
+            PermissionFlagsBits.SendMessagesInThreads,
+            PermissionFlagsBits.UseApplicationCommands,
+            PermissionFlagsBits.Speak,
+          ],
+        },
+        {
+          id: guild.client.user.id,
+          allow: [
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.SendMessages,
+            PermissionFlagsBits.EmbedLinks,
+            PermissionFlagsBits.ManageChannels,
+          ],
+        },
+      ],
+      reason: "Création automatique du salon d'isolement Lotus Security",
+    }).catch(() => null);
+
+    if (quarantineChannel) {
+      const infoEmbed = new EmbedBuilder()
+        .setTitle("🔒 Zone de Confinement — Lotus Security")
+        .setColor("#2b2d31")
+        .setDescription(
+          "**Ce salon est un espace d'isolement sécurisé.**\n\n" +
+          "Si vous avez accès à ce salon, votre compte a été placé en **quarantaine automatique** suite à un déclenchement du système de sécurité.\n\n" +
+          "• **Accès Restreint :** Vous ne pouvez ni envoyer de messages, ni interagir avec le serveur.\n" +
+          "• **Visibilité Staff :** Les administrateurs peuvent vous identifier et examiner votre situation ici.\n\n" +
+          "*Veuillez patienter qu'un administrateur traite votre dossier.*"
+        )
+        .setFooter({ text: "Lotus Security System • Zone restreinte" });
+
+      const pinnedMsg = await quarantineChannel.send({ embeds: [infoEmbed] }).catch(() => null);
+      if (pinnedMsg) await pinnedMsg.pin().catch(() => null);
+    }
+  }
+
+  return { quarantineRole, quarantineChannel };
+}
+
 async function punish({
   guild,
   guildConfig,
@@ -51,6 +126,10 @@ async function punish({
 
   const caseId = generateCaseId();
   const punishment = customSanction || guildConfig?.punishment || config.DEFAULT_PUNISHMENT;
+
+  // Garantir l'existence de la quarantaine si nécessaire
+  const { quarantineRole, quarantineChannel } = await ensureQuarantineSetup(guild);
+  const qRoleId = guildConfig?.quarantineRoleId || quarantineRole?.id;
 
   let member = null;
   let targetUser = null;
@@ -91,9 +170,9 @@ async function punish({
           break;
 
         case "timeout":
-          const timeoutRoles = guildConfig?.quarantineRoleId ? [guildConfig.quarantineRoleId] : [];
+          const timeoutRoles = qRoleId ? [qRoleId] : [];
           await member.roles.set(timeoutRoles, `[Lotus #${caseId}] Retrait des rôles + Isolement`);
-          await new Promise((resolve) => setTimeout(resolve, 1500));
+          await new Promise((resolve) => setTimeout(resolve, 1000));
           await member.timeout(24 * 60 * 60 * 1000, `[Lotus #${caseId}] ${reason}`);
           punishmentApplied = "STRIP_ROLES + TIMEOUT (24h)";
           statusIcon = "☣️";
@@ -101,10 +180,10 @@ async function punish({
           break;
 
         case "quarantine":
-          if (guildConfig?.quarantineRoleId) {
+          if (qRoleId) {
             const currentRoles = member.roles.cache.filter((r) => r.id !== guild.id).map((r) => r.id);
             details.previousRoles = currentRoles;
-            await member.roles.set([guildConfig.quarantineRoleId], `[Lotus #${caseId}] ${reason}`);
+            await member.roles.set([qRoleId], `[Lotus #${caseId}] ${reason}`);
             punishmentApplied = "QUARANTAINE (Isolement)";
             statusIcon = "☣️";
           } else {
@@ -117,8 +196,8 @@ async function punish({
 
         case "stripRoles":
         default:
-          if (guildConfig?.quarantineRoleId) {
-            await member.roles.set([guildConfig.quarantineRoleId], `[Lotus #${caseId}] ${reason}`);
+          if (qRoleId) {
+            await member.roles.set([qRoleId], `[Lotus #${caseId}] ${reason}`);
             punishmentApplied = "STRIP_ROLES + ISOLEMENT";
             statusIcon = "☣️";
           } else {
@@ -173,10 +252,7 @@ async function punish({
     timestamp: new Date(),
   }).catch((err) => console.error("[SecurityLog DB Error]:", err));
 
-  // Logs salon ou Fallback DM au proprio si le salon de log est introuvable
-  const targetChannelId = guildConfig?.logChannelId || guildConfig?.alertChannelId;
-  let logSent = false;
-
+  // Construction de l'Embed de Log
   const embed = new EmbedBuilder()
     .setColor(success ? "#FF2A2A" : "#FFCC00")
     .setAuthor({ name: "LOTUS SECURITY SYSTEM", iconURL: guild.iconURL({ dynamic: true }) || undefined })
@@ -190,6 +266,18 @@ async function punish({
     .setFooter({ text: `Lotus Security System • Case #${caseId}` })
     .setTimestamp();
 
+  // Notification DANS le salon de quarantaine (Permet au Staff de voir et pinger le membre)
+  if (quarantineChannel) {
+    await quarantineChannel.send({
+      content: `🚨 **Individu placé en Quarantaine :** ${targetUser ? `${targetUser} (\`${executorId}\`)` : `\`ID: ${executorId}\``}`,
+      embeds: [embed],
+    }).catch(() => null);
+  }
+
+  // Logs salon principal
+  const targetChannelId = guildConfig?.logChannelId || guildConfig?.alertChannelId;
+  let logSent = false;
+
   if (targetChannelId) {
     const channel = await guild.channels.fetch(targetChannelId).catch(() => null);
     if (channel?.isTextBased()) {
@@ -199,7 +287,7 @@ async function punish({
     }
   }
 
-  // Fallback DM au Propriétaire si salon de logs indisponible ou action sévère
+  // Fallback DM Propriétaire
   if (!logSent || isSevereAction(actionType)) {
     const owner = await guild.fetchOwner().catch(() => null);
     if (owner) {
@@ -210,4 +298,4 @@ async function punish({
   return { caseId, punishmentApplied };
 }
 
-module.exports = { punish };
+module.exports = { punish, ensureQuarantineSetup };

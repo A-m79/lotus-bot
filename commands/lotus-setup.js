@@ -118,7 +118,93 @@ module.exports = {
         actionsTaken.push(`🚨 **Salon Alertes :** Retrouvé et vérifié (<#${alertChannel.id}>).`);
       }
 
-      // 4. Sauvegarde BDD & Vider le cache de manière sûre
+      // 4. Détection ou création du Rôle de Quarantaine
+      let quarantineRole = config.quarantineRoleId ? guild.roles.cache.get(config.quarantineRoleId) : null;
+      if (!quarantineRole) {
+        quarantineRole = guild.roles.cache.find((r) => r.name === "Lotus Quarantaine");
+      }
+
+      if (!quarantineRole) {
+        quarantineRole = await guild.roles.create({
+          name: "Lotus Quarantaine",
+          color: "#2f3136",
+          reason: "Création automatique du rôle de quarantaine par /lotus-setup",
+        });
+        config.quarantineRoleId = quarantineRole.id;
+        actionsTaken.push("☣️ **Rôle Quarantaine :** `Lotus Quarantaine` créé.");
+      } else {
+        config.quarantineRoleId = quarantineRole.id;
+        actionsTaken.push(`☣️ **Rôle Quarantaine :** Retrouvé (<@&${quarantineRole.id}>).`);
+      }
+
+      // 5. Détection ou création du Salon de Quarantaine
+      let quarantineChannel = config.quarantineChannelId ? guild.channels.cache.get(config.quarantineChannelId) : null;
+      if (!quarantineChannel) {
+        quarantineChannel = guild.channels.cache.find(
+          (c) => c.type === ChannelType.GuildText && (c.name === "quarantaine-lotus" || c.name === "🔒-quarantaine") && c.parentId === category.id
+        );
+      }
+
+      if (!quarantineChannel) {
+        quarantineChannel = await guild.channels.create({
+          name: "🔒-quarantaine",
+          type: ChannelType.GuildText,
+          parent: category.id,
+          topic: "Espace d'isolement sécurisé pour les membres sous sanctions Lotus Security",
+          permissionOverwrites: [
+            { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+            {
+              id: quarantineRole.id,
+              allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory],
+              deny: [
+                PermissionFlagsBits.SendMessages,
+                PermissionFlagsBits.AddReactions,
+                PermissionFlagsBits.CreatePublicThreads,
+                PermissionFlagsBits.CreatePrivateThreads,
+                PermissionFlagsBits.SendMessagesInThreads,
+                PermissionFlagsBits.UseApplicationCommands,
+                PermissionFlagsBits.Speak,
+              ],
+            },
+            {
+              id: guild.client.user.id,
+              allow: [
+                PermissionFlagsBits.ViewChannel,
+                PermissionFlagsBits.SendMessages,
+                PermissionFlagsBits.EmbedLinks,
+                PermissionFlagsBits.ManageChannels,
+              ],
+            },
+          ],
+        });
+
+        // Message d'information fixe
+        const infoEmbed = new EmbedBuilder()
+          .setTitle("🔒 Zone de Confinement — Lotus Security")
+          .setColor("#2b2d31")
+          .setDescription(
+            "**Ce salon est un espace d'isolement sécurisé.**\n\n" +
+            "Si vous avez accès à ce salon, votre compte a été placé en **quarantaine automatique** à la suite d'un déclenchement du système de sécurité.\n\n" +
+            "• **Accès Restreint :** Vous ne pouvez ni envoyer de messages, ni interagir avec le serveur.\n" +
+            "• **Visibilité Staff :** Les administrateurs peuvent vous identifier et examiner votre dossier ici.\n\n" +
+            "*Veuillez patienter qu'un administrateur traite votre cas.*"
+          )
+          .setFooter({ text: "Lotus Security System • Zone restreinte" });
+
+        const pinnedMsg = await quarantineChannel.send({ embeds: [infoEmbed] }).catch(() => null);
+        if (pinnedMsg) await pinnedMsg.pin().catch(() => null);
+
+        config.quarantineChannelId = quarantineChannel.id;
+        actionsTaken.push("🔒 **Salon Quarantaine :** `#🔒-quarantaine` créé sous la catégorie.");
+      } else {
+        if (quarantineChannel.parentId !== category.id) {
+          await quarantineChannel.setParent(category.id).catch(() => null);
+        }
+        config.quarantineChannelId = quarantineChannel.id;
+        actionsTaken.push(`🔒 **Salon Quarantaine :** Retrouvé et vérifié (<#${quarantineChannel.id}>).`);
+      }
+
+      // 6. Sauvegarde BDD & Vider le cache de manière sûre
       await config.save();
       safeInvalidateCache(guild.id);
 
