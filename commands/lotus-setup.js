@@ -1,10 +1,29 @@
 const { SlashCommandBuilder, ChannelType, PermissionFlagsBits, EmbedBuilder } = require("discord.js");
 const GuildConfig = require("../models/GuildConfig");
-const { invalidateGuildConfig } = require("../utils/configCache");
+
+// Import sécurisé du cache
+const configCache = require("../utils/configCache");
+
+/**
+ * Nettoie le cache de manière universelle selon la structure de configCache.js
+ */
+function safeInvalidateCache(guildId) {
+  if (!configCache) return;
+
+  if (typeof configCache.invalidateGuildConfig === "function") {
+    configCache.invalidateGuildConfig(guildId);
+  } else if (typeof configCache.clearCache === "function") {
+    configCache.clearCache(guildId);
+  } else if (typeof configCache.delete === "function") {
+    configCache.delete(guildId);
+  } else if (configCache instanceof Map) {
+    configCache.delete(guildId);
+  }
+}
 
 module.exports = {
   data: new SlashCommandBuilder()
-    .setName("lotus-setup") // 👈 Ajusté sur le nom exact de la commande Discord
+    .setName("lotus-setup")
     .setDescription("Analyse et configure/répare automatiquement l'infrastructure de sécurité Lotus.")
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
@@ -99,9 +118,9 @@ module.exports = {
         actionsTaken.push(`🚨 **Salon Alertes :** Retrouvé et vérifié (<#${alertChannel.id}>).`);
       }
 
-      // 4. Sauvegarde BDD & Reset Cache
+      // 4. Sauvegarde BDD & Vider le cache de manière sûre
       await config.save();
-      invalidateGuildConfig(guild.id);
+      safeInvalidateCache(guild.id);
 
       const embed = new EmbedBuilder()
         .setTitle("⚙️ Audit & Diagnostic /lotus-setup - Lotus")
