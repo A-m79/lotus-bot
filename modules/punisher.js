@@ -128,7 +128,7 @@ async function punish({
   const punishment = customSanction || guildConfig?.punishment || config.DEFAULT_PUNISHMENT;
 
   // Garantir l'existence de la quarantaine si nécessaire
-  const { quarantineRole, quarantineChannel } = await ensureQuarantineSetup(guild);
+  const { quarantineRole } = await ensureQuarantineSetup(guild);
   const qRoleId = guildConfig?.quarantineRoleId || quarantineRole?.id;
 
   let member = null;
@@ -266,15 +266,7 @@ async function punish({
     .setFooter({ text: `Lotus Security System • Case #${caseId}` })
     .setTimestamp();
 
-  // Notification DANS le salon de quarantaine (Permet au Staff de voir et pinger le membre)
-  if (quarantineChannel) {
-    await quarantineChannel.send({
-      content: `🚨 **Individu placé en Quarantaine :** ${targetUser ? `${targetUser} (\`${executorId}\`)` : `\`ID: ${executorId}\``}`,
-      embeds: [embed],
-    }).catch(() => null);
-  }
-
-  // Logs salon principal
+  // Logs salon principal (#logs-lotus / #alertes-lotus)
   const targetChannelId = guildConfig?.logChannelId || guildConfig?.alertChannelId;
   let logSent = false;
 

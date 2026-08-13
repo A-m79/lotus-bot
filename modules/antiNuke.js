@@ -6,10 +6,34 @@ const { getGuildConfig } = require("../utils/configCache");
 const { punish } = require("./punisher");
 const { handleLogChannelDeletion } = require("../utils/logProtector");
 
+// Suivi temporaire des salons créés par utilisateur pour le Rollback complet
+const createdChannelsTracker = new Map();
+
+function trackCreatedChannel(guildId, userId, channelId) {
+  const key = `${guildId}:${userId}`;
+  if (!createdChannelsTracker.has(key)) {
+    createdChannelsTracker.set(key, []);
+  }
+  const userChannels = createdChannelsTracker.get(key);
+  userChannels.push({ channelId, timestamp: Date.now() });
+
+  // Nettoyage automatique des entrées de plus de (ANTINUKE_WINDOW_MS)
+  const windowMs = config.ANTINUKE_WINDOW_MS || 10000;
+  const filtered = userChannels.filter((item) => Date.now() - item.timestamp < windowMs);
+  createdChannelsTracker.set(key, filtered);
+}
+
+function getAndClearCreatedChannels(guildId, userId) {
+  const key = `${guildId}:${userId}`;
+  const userChannels = createdChannelsTracker.get(key) || [];
+  createdChannelsTracker.delete(key);
+  return userChannels.map((item) => item.channelId);
+}
+
 function getThreshold(guildConfig, actionType) {
   return (
     guildConfig?.thresholds?.[actionType] ??
-    config.DEFAULT_THRESHOLDS[actionType] ?? 3
+    config.DEFAULT_THRESHOLDS?.[actionType] ?? 3
   );
 }
 
@@ -54,7 +78,7 @@ async function checkAndPunish({ guild, executorId, actionType, reasonLabel, deta
   // Mais s'il dépasse ce seuil critique, la neutralisation se déclenche !
   const threshold = isWL ? baseThreshold + 3 : baseThreshold;
 
-  const count = rateTracker.hit(guild.id, executorId, actionType, config.ANTINUKE_WINDOW_MS);
+  const count = rateTracker.hit(guild.id, executorId, actionType, config.ANTINUKE_WINDOW_MS || 10000);
 
   if (count >= threshold) {
     rateTracker.reset(guild.id, executorId, actionType);
@@ -63,7 +87,7 @@ async function checkAndPunish({ guild, executorId, actionType, reasonLabel, deta
       guildConfig,
       executorId,
       actionType,
-      reason: `${reasonLabel} ${isWL ? "[SÉCURITÉ WHITELIST DÉPASSÉE]" : ""} (${count}/${threshold} en ${config.ANTINUKE_WINDOW_MS / 1000}s)`,
+      reason: `${reasonLabel} ${isWL ? "[SÉCURITÉ WHITELIST DÉPASSÉE]" : ""} (${count}/${threshold} en ${(config.ANTINUKE_WINDOW_MS || 10000) / 1000}s)`,
       details,
     });
     return true;
@@ -95,9 +119,11 @@ function registerAntiNuke(client) {
   client.on("channelCreate", async (channel) => {
     if (!channel.guild) return;
 
-    // Tentatives répétées pour s'assurer que Discord a bien écrit le log
     const executor = await getExecutorWithRetry(channel.guild, AuditLogEvent.ChannelCreate, channel.id);
     if (!executor) return;
+
+    // Enregistre ce salon dans l'historique récent de cet utilisateur
+    trackCreatedChannel(channel.guild.id, executor.id, channel.id);
 
     const punished = await checkAndPunish({
       guild: channel.guild,
@@ -107,9 +133,21 @@ function registerAntiNuke(client) {
       details: { channelId: channel.id, channelName: channel.name },
     });
 
-    // 🧹 ROLLBACK : Si la création déclenche le Nuke, on supprime le salon créé
+    // 🧹 ROLLBACK TOTAL : Si la création déclenche le Nuke, on supprime TOUS les salons créés par l'attaquant dans la fenêtre
     if (punished) {
-      await channel.delete("[Lotus Anti-Nuke] Nettoyage suite à création massive").catch(() => null);
+      const channelsToDelete = getAndClearCreatedChannels(channel.guild.id, executor.id);
+      
+      // S'assurer que le salon actuel est bien inclus
+      if (!channelsToDelete.includes(channel.id)) {
+        channelsToDelete.push(channel.id);
+      }
+
+      for (const chId of channelsToDelete) {
+        const targetCh = channel.guild.channels.cache.get(chId);
+        if (targetCh) {
+          await targetCh.delete("[Lotus Anti-Nuke] Nettoyage suite à création massive").catch(() => null);
+        }
+      }
     }
   });
 
@@ -310,7 +348,7 @@ function registerAntiNuke(client) {
     }
   });
 
-  console.log("[AntiNuke Pro] Module Zero-Trust + Auto-Rollback actif.");
+  console.log("[AntiNuke Pro] Module Zero-Trust + Rollback Intégral actif.");
 }
 
 module.exports = { registerAntiNuke };
