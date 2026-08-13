@@ -204,7 +204,16 @@ module.exports = {
         actionsTaken.push(`🔒 **Salon Quarantaine :** Retrouvé et vérifié (<#${quarantineChannel.id}>).`);
       }
 
-      // 6. Sauvegarde BDD & Vider le cache de manière sûre
+      // 6. Activation forcée de tous les modules de protection & Sanction
+      config.antiNukeEnabled = true;
+      config.antiRaidEnabled = true;
+      config.antiSpamEnabled = true;
+      config.altDetectionEnabled = true;
+      config.punishment = "quarantine"; // Bascule la sanction par défaut sur la quarantaine
+
+      actionsTaken.push("🛡️ **Systèmes de Protection :** `Anti-Nuke`, `Anti-Raid`, `Anti-Spam` et `Anti-Double-Compte` **ACTIVÉS** (Mode: Quarantaine).");
+
+      // 7. Sauvegarde BDD & Nettoyage du Cache
       await config.save();
       safeInvalidateCache(guild.id);
 
@@ -212,10 +221,10 @@ module.exports = {
         .setTitle("⚙️ Audit & Diagnostic /lotus-setup - Lotus")
         .setColor("#00FF7F")
         .setDescription(
-          "Lotus a analysé la structure du serveur et ré-aligné la configuration de sécurité :\n\n" +
+          "Lotus a analysé la structure du serveur, ré-aligné la configuration et armé le bouclier de sécurité :\n\n" +
             actionsTaken.join("\n")
         )
-        .setFooter({ text: "Lotus Security System • Système opérationnel" })
+        .setFooter({ text: "Lotus Security System • Système armé et opérationnel" })
         .setTimestamp();
 
       return interaction.editReply({ embeds: [embed] });
