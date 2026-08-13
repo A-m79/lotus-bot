@@ -16,9 +16,14 @@ function registerAntiRoleNuke(client) {
 
     const executorId = entry.executor.id;
 
-    // Ignorer le propriétaire et la whitelist
-    if (executorId === guild.ownerId) return;
-    if (guildConfig?.whitelist?.includes(executorId)) return;
+    // 1. IMMUNITÉ ABSOLUE : Owner du serveur / Owner du Bot uniquement
+    const isOwner = executorId === guild.ownerId || (process.env.OWNER_ID && executorId === process.env.OWNER_ID);
+    if (isOwner) return;
+
+    // 2. SEUIL ZERO-TRUST :
+    // 3 rôles pour un utilisateur standard, 5 rôles max en 10s pour un membre Whitelisté
+    const isWL = guildConfig?.whitelist?.includes(executorId);
+    const threshold = isWL ? 5 : 3;
 
     const now = Date.now();
     if (!roleTracker.has(executorId)) {
@@ -32,8 +37,8 @@ function registerAntiRoleNuke(client) {
     const recentActions = timestamps.filter((t) => now - t < 10000);
     roleTracker.set(executorId, recentActions);
 
-    // Déclenchement si 3 rôles ou plus sont créés/supprimés en 10s
-    if (recentActions.length >= 3) {
+    // Déclenchement si le seuil (3 normal, 5 whitelist) est atteint en 10s
+    if (recentActions.length >= threshold) {
       roleTracker.delete(executorId);
 
       await punish({
@@ -41,7 +46,7 @@ function registerAntiRoleNuke(client) {
         guildConfig,
         executorId,
         actionType: "ROLE_NUKE",
-        reason: `${actionTypeLabel} massive de rôles (${recentActions.length}/3 en 10s)`,
+        reason: `${actionTypeLabel} massive de rôles ${isWL ? "[SÉCURITÉ WHITELIST DÉPASSÉE]" : ""} (${recentActions.length}/${threshold} en 10s)`,
         details: {
           Rôle: role.name,
           Auteur: entry.executor.tag,

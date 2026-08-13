@@ -13,10 +13,15 @@ function getThreshold(guildConfig, actionType) {
   );
 }
 
-function isWhitelisted(guild, guildConfig, userId) {
+// 🛡️ IMMUNITÉ ABSOLUE : Réservée au Owner du serveur, au Bot et au Owner du Bot
+function isOwner(guild, userId) {
   if (userId === guild.ownerId) return true;
   if (userId === guild.client.user.id) return true;
   if (process.env.OWNER_ID && userId === process.env.OWNER_ID) return true;
+  return false;
+}
+
+function isWhitelisted(guildConfig, userId) {
   return guildConfig?.whitelist?.includes(userId) ?? false;
 }
 
@@ -24,9 +29,18 @@ async function checkAndPunish({ guild, executorId, actionType, reasonLabel, deta
   const guildConfig = await getGuildConfig(guild.id);
 
   if (!guildConfig.antiNukeEnabled) return false;
-  if (isWhitelisted(guild, guildConfig, executorId)) return false;
 
-  const threshold = getThreshold(guildConfig, actionType);
+  // 1. Check Owner (Immunité Totale)
+  if (isOwner(guild, executorId)) return false;
+
+  const baseThreshold = getThreshold(guildConfig, actionType);
+  const isWL = isWhitelisted(guildConfig, executorId);
+
+  // 2. SEUIL ZERO-TRUST :
+  // Un Whitelisté a une marge (+3 actions) pour ses tâches de modération/maintenance.
+  // Mais s'il dépasse ce seuil critique, la neutralisation se déclenche !
+  const threshold = isWL ? baseThreshold + 3 : baseThreshold;
+
   const count = rateTracker.hit(guild.id, executorId, actionType, config.ANTINUKE_WINDOW_MS);
 
   if (count >= threshold) {
@@ -36,7 +50,7 @@ async function checkAndPunish({ guild, executorId, actionType, reasonLabel, deta
       guildConfig,
       executorId,
       actionType,
-      reason: `${reasonLabel} (${count}/${threshold} en ${config.ANTINUKE_WINDOW_MS / 1000}s)`,
+      reason: `${reasonLabel} ${isWL ? "[SÉCURITÉ WHITELIST DÉPASSÉE]" : ""} (${count}/${threshold} en ${config.ANTINUKE_WINDOW_MS / 1000}s)`,
       details,
     });
     return true;
@@ -272,7 +286,7 @@ function registerAntiNuke(client) {
     }
   });
 
-  console.log("[AntiNuke] Module chargé et event listeners actifs.");
+  console.log("[AntiNuke Pro] Module Zero-Trust chargé et actif.");
 }
 
 module.exports = { registerAntiNuke };
