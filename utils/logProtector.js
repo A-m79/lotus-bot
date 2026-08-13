@@ -1,6 +1,7 @@
 const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits } = require("discord.js");
 const GuildConfig = require("../models/GuildConfig");
 const { invalidateGuildConfig } = require("./configCache");
+const { ensureQuarantineSetup } = require("../modules/punisher");
 
 const recreatingGuilds = new Set();
 const savedMemberRoles = new Map();
@@ -25,6 +26,7 @@ async function handleLogChannelDeletion(guild, deletedChannel, executor) {
 
     const isLogChannel = config.logChannelId === deletedChannel.id;
     const isAlertChannel = config.alertChannelId === deletedChannel.id;
+    const isQuarantineChannel = deletedChannel.name === "🔒-quarantaine";
     const isCategory = deletedChannel.type === ChannelType.GuildCategory;
 
     const logChan = config.logChannelId ? guild.channels.cache.get(config.logChannelId) : null;
@@ -37,7 +39,7 @@ async function handleLogChannelDeletion(guild, deletedChannel, executor) {
         (logChan && logChan.parentId === deletedChannel.id) ||
         (alertChan && alertChan.parentId === deletedChannel.id));
 
-    if (!isLogChannel && !isAlertChannel && !isLotusCategory) return;
+    if (!isLogChannel && !isAlertChannel && !isQuarantineChannel && !isLotusCategory) return;
 
     console.log(`[LOG-PROTECTOR] Suppression de ${deletedChannel.name} par ${executor.tag} sur ${guild.name}`);
 
@@ -74,6 +76,15 @@ async function handleLogChannelDeletion(guild, deletedChannel, executor) {
         `• **Auteur :** ${executor.tag} (\`${executor.id}\`)\n` +
         `• **Sanction :** Retrait de ses rôles.\n` +
         `• **Action :** Catégorie auto-recréée ${newCategory ? `<#${newCategory.id}>` : "*(Échec)*"}.`;
+    } else if (isQuarantineChannel) {
+      // Recréation complète de la quarantaine via ensureQuarantineSetup
+      const { quarantineChannel } = await ensureQuarantineSetup(guild);
+
+      descriptionMsg =
+        `Le salon de quarantaine **#🔒-quarantaine** a été supprimé.\n\n` +
+        `• **Auteur :** ${executor.tag} (\`${executor.id}\`)\n` +
+        `• **Sanction :** Retrait de ses rôles.\n` +
+        `• **Action :** Salon de quarantaine auto-recréé ${quarantineChannel ? `<#${quarantineChannel.id}>` : "*(Échec)*"}.`;
     } else {
       let channelTypeLabel = "sécurité";
       if (isLogChannel && isAlertChannel) channelTypeLabel = "logs & alertes";
@@ -152,6 +163,56 @@ async function handleLogChannelDeletion(guild, deletedChannel, executor) {
   }
 }
 
+async function handleRoleDeletion(guild, deletedRole, executor) {
+  // 🛡️ IMMUNITÉ OWNER
+  const botOwnerId = process.env.OWNER_ID;
+  const isOwner = executor.id === guild.ownerId || (botOwnerId && executor.id === botOwnerId);
+  if (isOwner) return;
+
+  if (deletedRole.name === "Lotus Quarantaine") {
+    console.log(`[LOG-PROTECTOR] Suppression du rôle de quarantaine par ${executor.tag} sur ${guild.name}`);
+
+    // Sanction de l'auteur
+    const member = await guild.members.fetch(executor.id).catch(() => null);
+    if (member && member.manageable) {
+      const rolesToSave = member.roles.cache.filter((r) => r.id !== guild.id).map((r) => r.id);
+      savedMemberRoles.set(`${guild.id}_${executor.id}`, rolesToSave);
+      await member.roles.set([], `[Lotus LogProtector] Suppression non autorisée du rôle de quarantaine`).catch(() => null);
+    }
+
+    // Recréation automatique du rôle
+    await ensureQuarantineSetup(guild);
+
+    const restoreButton = new ButtonBuilder()
+      .setCustomId(`restore_roles_${guild.id}_${executor.id}`)
+      .setLabel(`Rétablir les rôles de ${executor.username}`)
+      .setStyle(ButtonStyle.Danger)
+      .setEmoji("🔄");
+
+    const row = new ActionRowBuilder().addComponents(restoreButton);
+
+    const embed = new EmbedBuilder()
+      .setTitle("🚨 ALERTE CRITIQUE : Rôle de Quarantaine Supprimé !")
+      .setColor("#FF0000")
+      .setDescription(
+        `Le rôle de sécurité **Lotus Quarantaine** a été supprimé.\n\n` +
+        `• **Auteur :** ${executor.tag} (\`${executor.id}\`)\n` +
+        `• **Sanction :** Retrait de ses rôles.\n` +
+        `• **Action :** Rôle auto-recréé avec succès.`
+      )
+      .setFooter({ text: "Lotus Security System • Protection Ultime" })
+      .setTimestamp();
+
+    const owner = await guild.fetchOwner().catch(() => null);
+    if (owner) await owner.send({ embeds: [embed], components: [row] }).catch(() => null);
+
+    if (botOwnerId && botOwnerId !== owner?.id) {
+      const botOwner = await guild.client.users.fetch(botOwnerId).catch(() => null);
+      if (botOwner) await botOwner.send({ embeds: [embed], components: [row] }).catch(() => null);
+    }
+  }
+}
+
 async function handleRestoreRolesButton(interaction) {
   if (!interaction.customId.startsWith("restore_roles_")) return;
 
@@ -179,4 +240,4 @@ async function handleRestoreRolesButton(interaction) {
   return interaction.editReply(`✅ Rôles rétablis avec succès pour **${member.user.tag}** !`);
 }
 
-module.exports = { handleLogChannelDeletion, handleRestoreRolesButton };
+module.exports = { handleLogChannelDeletion, handleRoleDeletion, handleRestoreRolesButton };
