@@ -25,6 +25,19 @@ function isWhitelisted(guildConfig, userId) {
   return guildConfig?.whitelist?.includes(userId) ?? false;
 }
 
+/**
+ * Helper sécurisé : fait jusqu'à 3 tentatives avec getExecutor 
+ * pour ne jamais rater un log à cause des délais de synchro de Discord
+ */
+async function getExecutorWithRetry(guild, auditLogEvent, targetId = undefined, maxDelay = 3000, attempts = 3) {
+  for (let i = 0; i < attempts; i++) {
+    const executor = await getExecutor(guild, auditLogEvent, targetId, maxDelay);
+    if (executor) return executor;
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  }
+  return null;
+}
+
 async function checkAndPunish({ guild, executorId, actionType, reasonLabel, details }) {
   const guildConfig = await getGuildConfig(guild.id);
 
@@ -63,7 +76,7 @@ function registerAntiNuke(client) {
   // --- Suppression de salons ---
   client.on("channelDelete", async (channel) => {
     if (!channel.guild) return;
-    const executor = await getExecutor(channel.guild, AuditLogEvent.ChannelDelete, channel.id);
+    const executor = await getExecutorWithRetry(channel.guild, AuditLogEvent.ChannelDelete, channel.id);
     if (!executor) return;
 
     // Protection du salon de logs/alertes
@@ -82,10 +95,8 @@ function registerAntiNuke(client) {
   client.on("channelCreate", async (channel) => {
     if (!channel.guild) return;
 
-    // Petit délai (500ms) pour laisser le temps à Discord d'inscrire l'action dans les Audit Logs
-    await new Promise((resolve) => setTimeout(resolve, 500));
-
-    const executor = await getExecutor(channel.guild, AuditLogEvent.ChannelCreate, channel.id);
+    // Tentatives répétées pour s'assurer que Discord a bien écrit le log
+    const executor = await getExecutorWithRetry(channel.guild, AuditLogEvent.ChannelCreate, channel.id);
     if (!executor) return;
 
     const punished = await checkAndPunish({
@@ -113,8 +124,7 @@ function registerAntiNuke(client) {
     const newCanView = newEveryone ? !newEveryone.deny.has(PermissionFlagsBits.ViewChannel) : true;
 
     if (!oldCanView && newCanView) {
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      const executor = await getExecutor(newChannel.guild, AuditLogEvent.ChannelOverwriteUpdate, newChannel.id);
+      const executor = await getExecutorWithRetry(newChannel.guild, AuditLogEvent.ChannelOverwriteUpdate, newChannel.id);
       if (!executor) return;
 
       await checkAndPunish({
@@ -129,7 +139,7 @@ function registerAntiNuke(client) {
 
   // --- Suppression & Création de Rôles ---
   client.on("roleDelete", async (role) => {
-    const executor = await getExecutor(role.guild, AuditLogEvent.RoleDelete, role.id);
+    const executor = await getExecutorWithRetry(role.guild, AuditLogEvent.RoleDelete, role.id);
     if (!executor) return;
 
     await checkAndPunish({
@@ -142,8 +152,7 @@ function registerAntiNuke(client) {
   });
 
   client.on("roleCreate", async (role) => {
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    const executor = await getExecutor(role.guild, AuditLogEvent.RoleCreate, role.id);
+    const executor = await getExecutorWithRetry(role.guild, AuditLogEvent.RoleCreate, role.id);
     if (!executor) return;
 
     const punished = await checkAndPunish({
@@ -161,7 +170,7 @@ function registerAntiNuke(client) {
 
   // --- Bans & Kicks en masse ---
   client.on("guildBanAdd", async (ban) => {
-    const executor = await getExecutor(ban.guild, AuditLogEvent.MemberBanAdd, ban.user.id);
+    const executor = await getExecutorWithRetry(ban.guild, AuditLogEvent.MemberBanAdd, ban.user.id);
     if (!executor) return;
 
     await checkAndPunish({
@@ -174,7 +183,7 @@ function registerAntiNuke(client) {
   });
 
   client.on("guildMemberRemove", async (member) => {
-    const executor = await getExecutor(member.guild, AuditLogEvent.MemberKick, member.id, 3000);
+    const executor = await getExecutorWithRetry(member.guild, AuditLogEvent.MemberKick, member.id, 3000);
     if (!executor) return;
 
     await checkAndPunish({
@@ -188,8 +197,7 @@ function registerAntiNuke(client) {
 
   // --- Webhooks, Bots non autorisés ---
   client.on("webhooksUpdate", async (channel) => {
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    const executor = await getExecutor(channel.guild, AuditLogEvent.WebhookCreate, undefined, 3000);
+    const executor = await getExecutorWithRetry(channel.guild, AuditLogEvent.WebhookCreate, undefined, 3000);
     if (!executor) return;
 
     await checkAndPunish({
@@ -204,8 +212,7 @@ function registerAntiNuke(client) {
   client.on("guildMemberAdd", async (member) => {
     if (!member.user.bot) return;
 
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    const executor = await getExecutor(member.guild, AuditLogEvent.BotAdd, member.id, 5000);
+    const executor = await getExecutorWithRetry(member.guild, AuditLogEvent.BotAdd, member.id, 5000);
     if (!executor) return;
 
     await checkAndPunish({
@@ -219,7 +226,7 @@ function registerAntiNuke(client) {
 
   // --- Suppression Émojis & Stickers ---
   client.on("emojiDelete", async (emoji) => {
-    const executor = await getExecutor(emoji.guild, AuditLogEvent.EmojiDelete, emoji.id);
+    const executor = await getExecutorWithRetry(emoji.guild, AuditLogEvent.EmojiDelete, emoji.id);
     if (!executor) return;
 
     await checkAndPunish({
@@ -232,7 +239,7 @@ function registerAntiNuke(client) {
   });
 
   client.on("stickerDelete", async (sticker) => {
-    const executor = await getExecutor(sticker.guild, AuditLogEvent.StickerDelete, sticker.id);
+    const executor = await getExecutorWithRetry(sticker.guild, AuditLogEvent.StickerDelete, sticker.id);
     if (!executor) return;
 
     await checkAndPunish({
@@ -246,7 +253,7 @@ function registerAntiNuke(client) {
 
   // --- Modification du Serveur (Nom, Vanity, Icône) ---
   client.on("guildUpdate", async (oldGuild, newGuild) => {
-    const executor = await getExecutor(newGuild, AuditLogEvent.GuildUpdate, undefined, 3000);
+    const executor = await getExecutorWithRetry(newGuild, AuditLogEvent.GuildUpdate, undefined, 3000);
     if (!executor) return;
 
     if (oldGuild.name !== newGuild.name || oldGuild.vanityURLCode !== newGuild.vanityURLCode) {
@@ -268,7 +275,7 @@ function registerAntiNuke(client) {
     const hasAdmin = newMember.permissions.has(PermissionFlagsBits.Administrator);
 
     if (hadAdmin && !hasAdmin) {
-      const executor = await getExecutor(newMember.guild, AuditLogEvent.MemberRoleUpdate, newMember.id, 3000);
+      const executor = await getExecutorWithRetry(newMember.guild, AuditLogEvent.MemberRoleUpdate, newMember.id, 3000);
       const guild = newMember.guild;
 
       const owner = await guild.fetchOwner().catch(() => null);
