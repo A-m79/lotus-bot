@@ -1,5 +1,6 @@
 const { SlashCommandBuilder, PermissionFlagsBits, ChannelType, EmbedBuilder } = require("discord.js");
 const GuildConfig = require("../models/GuildConfig");
+const { invalidate } = require("../utils/configCache");
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -82,6 +83,11 @@ module.exports = {
         },
         { upsert: true, new: true }
       );
+
+      // Invalide le cache mémoire (TTL 30s) pour que la nouvelle config soit
+      // immédiatement prise en compte par les autres modules (anti-nuke, anti-raid...)
+      // au lieu d'attendre jusqu'à 30s l'expiration naturelle du cache.
+      invalidate(guild.id);
 
       const embed = new EmbedBuilder()
         .setColor("#00FF7F")

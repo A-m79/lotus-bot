@@ -7,11 +7,13 @@ module.exports = {
     channelDelete: 3,      // suppressions de salons en ANTINUKE_WINDOW_MS
     channelCreate: 5,      // création massive de salons (spam)
     roleDelete: 3,         // suppressions de rôles
+    roleCreate: 3,         // création massive de rôles (remplace l'ancien module antiRoleNuke)
     memberBan: 5,          // bans en masse
     memberKick: 5,         // kicks en masse
     webhookCreate: 3,      // création de webhooks (souvent utilisé pour leak/spam)
     botAdd: 1,              // ajout d'un bot non whitelisté = sanction immédiate
     dangerousRoleUpdate: 2, // attribution de perms admin/dangereuses à un rôle/membre
+    antiSpam: 4,            // messages en flood par fenêtre de 7s (voir antiSpam.js)
   },
 
   // Sanction par défaut appliquée à l'auteur d'un nuke détecté

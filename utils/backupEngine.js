@@ -16,7 +16,10 @@ async function takeBackup(guild) {
       position: r.position,
     }));
 
-  // Capture des salons
+  // Capture des salons, y compris leurs permissions spécifiques (permissionOverwrites).
+  // Pour les overwrites de type "rôle", on sauvegarde aussi le NOM du rôle (roleName) :
+  // si un rôle est supprimé puis recréé par la restauration, il obtient un nouvel ID
+  // Discord, donc on ne peut pas se fier uniquement à l'ID sauvegardé pour le retrouver.
   const channels = guild.channels.cache
     .sort((a, b) => a.position - b.position)
     .map((c) => ({
@@ -29,6 +32,15 @@ async function takeBackup(guild) {
       nsfw: c.nsfw || false,
       bitrate: c.bitrate || null,
       userLimit: c.userLimit || null,
+      permissionOverwrites: c.permissionOverwrites
+        ? c.permissionOverwrites.cache.map((ow) => ({
+            id: ow.id,
+            type: ow.type, // 0 = rôle, 1 = membre
+            roleName: ow.type === 0 ? guild.roles.cache.get(ow.id)?.name ?? null : null,
+            allow: ow.allow.bitfield.toString(),
+            deny: ow.deny.bitfield.toString(),
+          }))
+        : [],
     }));
 
   await GuildBackup.findOneAndUpdate(
@@ -48,12 +60,45 @@ async function takeBackup(guild) {
   };
 }
 
+/**
+ * Résout les overwrites sauvegardés en overwrites applicables sur le serveur actuel.
+ * - Les overwrites de rôle sont résolus par NOM (l'ID d'origine peut avoir changé
+ *   si le rôle a dû être recréé pendant la restauration).
+ * - Les overwrites de membre sont conservés par ID, seulement si le membre est
+ *   toujours présent sur le serveur (sinon Discord rejetterait l'overwrite).
+ * Les entrées introuvables sont simplement ignorées (pas d'erreur bloquante).
+ */
+async function resolveOverwrites(guild, overwritesBackup) {
+  if (!overwritesBackup || !overwritesBackup.length) return [];
+
+  const resolved = [];
+  for (const ow of overwritesBackup) {
+    try {
+      if (ow.type === 0) {
+        const role = ow.roleName
+          ? guild.roles.cache.find((r) => r.name === ow.roleName)
+          : guild.roles.cache.get(ow.id);
+        if (!role) continue;
+        resolved.push({ id: role.id, type: 0, allow: BigInt(ow.allow), deny: BigInt(ow.deny) });
+      } else {
+        const member = await guild.members.fetch(ow.id).catch(() => null);
+        if (!member) continue;
+        resolved.push({ id: member.id, type: 1, allow: BigInt(ow.allow), deny: BigInt(ow.deny) });
+      }
+    } catch {
+      // Overwrite ignoré si résolution impossible (rôle/membre supprimé, ID invalide...)
+    }
+  }
+  return resolved;
+}
+
 async function restoreBackup(guild) {
   const backup = await GuildBackup.findOne({ guildId: guild.id });
   if (!backup) return null;
 
   const restoredRoles = [];
   const restoredChannels = [];
+  let repairedPermissions = 0;
 
   // 1. Restauration des rôles manquants
   for (const r of backup.roles) {
@@ -88,7 +133,7 @@ async function restoreBackup(guild) {
 
   const createdCategories = new Map();
 
-  // Restauration et positionnement des catégories
+  // Restauration et positionnement des catégories (+ leurs permissions)
   for (const cat of categoriesBackup) {
     let existingCat = guild.channels.cache.find(
       (c) => c.name === cat.name && c.type === ChannelType.GuildCategory
@@ -111,10 +156,21 @@ async function restoreBackup(guild) {
       if (existingCat.position !== cat.position) {
         await existingCat.setPosition(cat.position).catch(() => null);
       }
+
+      // Réapplique les permissions de la catégorie (créée ou déjà existante) :
+      // ça permet aussi de "réparer" une catégorie dont les permissions auraient
+      // été modifiées sans que la catégorie elle-même soit supprimée.
+      const overwrites = await resolveOverwrites(guild, cat.permissionOverwrites);
+      if (overwrites.length) {
+        const applied = await existingCat.permissionOverwrites
+          .set(overwrites, "Lotus Backup Restore")
+          .catch(() => null);
+        if (applied) repairedPermissions++;
+      }
     }
   }
 
-  // Restauration des salons textuels / vocaux
+  // Restauration des salons textuels / vocaux (+ leurs permissions)
   const currentChannels = await guild.channels.fetch();
 
   for (const ch of otherChannelsBackup) {
@@ -122,9 +178,12 @@ async function restoreBackup(guild) {
       (c) => c.name === ch.name && c.type === ch.type && c.parentName === ch.parentName
     ).length;
 
-    const currentCount = currentChannels.filter(
+    const matchingCurrent = currentChannels.filter(
       (c) => c.name === ch.name && c.type === ch.type && (c.parent ? c.parent.name : null) === ch.parentName
-    ).size;
+    );
+    const currentCount = matchingCurrent.size;
+
+    let targetChannel = null;
 
     if (currentCount < targetCount) {
       const parentId = ch.parentName
@@ -151,6 +210,21 @@ async function restoreBackup(guild) {
         if (ch.position !== undefined) {
           await newChannel.setPosition(ch.position).catch(() => null);
         }
+        targetChannel = newChannel;
+      }
+    } else {
+      // Salon déjà présent en nombre suffisant : on prend le premier match pour
+      // lui réappliquer ses permissions d'origine (répare un salon "ouvert" par erreur).
+      targetChannel = matchingCurrent.first();
+    }
+
+    if (targetChannel) {
+      const overwrites = await resolveOverwrites(guild, ch.permissionOverwrites);
+      if (overwrites.length) {
+        const applied = await targetChannel.permissionOverwrites
+          .set(overwrites, "Lotus Backup Restore")
+          .catch(() => null);
+        if (applied) repairedPermissions++;
       }
     }
   }
@@ -158,6 +232,7 @@ async function restoreBackup(guild) {
   return {
     restoredRoles,
     restoredChannels,
+    repairedPermissions,
     backupDate: backup.updatedAt,
   };
 }

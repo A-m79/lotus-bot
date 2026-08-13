@@ -94,6 +94,9 @@ function registerAntiNuke(client) {
   });
 
   // --- Suppression de rôles ---
+  // (fusionné avec l'ancien module antiRoleNuke.js pour éviter le double-tracking :
+  // ce handler seul gère désormais roleDelete, avec la whitelist complète et le
+  // check antiNukeEnabled que l'ancien module n'avait pas)
   client.on("roleDelete", async (role) => {
     const executor = await getExecutor(role.guild, AuditLogEvent.RoleDelete, role.id);
     if (!executor) return;
@@ -103,6 +106,22 @@ function registerAntiNuke(client) {
       executorId: executor.id,
       actionType: "roleDelete",
       reasonLabel: "Suppression massive de rôles",
+      details: { roleId: role.id, roleName: role.name },
+    });
+  });
+
+  // --- Création massive de rôles ---
+  // (idem : reprend ce que faisait antiRoleNuke.js sur roleCreate, mais via le
+  // pipeline commun checkAndPunish plutôt qu'un tracker parallèle indépendant)
+  client.on("roleCreate", async (role) => {
+    const executor = await getExecutor(role.guild, AuditLogEvent.RoleCreate, role.id);
+    if (!executor) return;
+
+    await checkAndPunish({
+      guild: role.guild,
+      executorId: executor.id,
+      actionType: "roleCreate",
+      reasonLabel: "Création massive de rôles",
       details: { roleId: role.id, roleName: role.name },
     });
   });

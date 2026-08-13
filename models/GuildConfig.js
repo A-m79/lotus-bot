@@ -13,17 +13,20 @@ const GuildConfigSchema = new Schema(
     antiNukeEnabled: { type: Boolean, default: true },
     antiRaidEnabled: { type: Boolean, default: true },
     antiSpamEnabled: { type: Boolean, default: true },
+    altDetectionEnabled: { type: Boolean, default: true },
 
     // Seuils custom (fusionnés avec les defaults si non définis)
     thresholds: {
       channelDelete: Number,
       channelCreate: Number,
       roleDelete: Number,
+      roleCreate: Number,
       memberBan: Number,
       memberKick: Number,
       webhookCreate: Number,
       botAdd: Number,
       dangerousRoleUpdate: Number,
+      antiSpam: Number,
     },
 
     punishment: {

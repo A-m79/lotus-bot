@@ -62,7 +62,8 @@ module.exports = {
         .addFields(
           {
             name: "⚙️ Métadonnées capturées",
-            value: "• Hiérarchie & Positions\n• Permissions exactes\n• Couleurs & Hoist rôles\n• Sujets, Bitrate & Option +18",
+            value:
+              "• Hiérarchie & Positions\n• Permissions des rôles\n• Permissions spécifiques des salons (overwrites)\n• Couleurs & Hoist rôles\n• Sujets, Bitrate & Option +18",
           },
           {
             name: `🎭 Rôles enregistrés (${data.roles.length})`,
@@ -122,10 +123,11 @@ module.exports = {
       const embed = new EmbedBuilder()
         .setTitle("🔄 Restauration Terminée !")
         .setColor("#57F287")
-        .setDescription("Les positions et éléments manquants ont été réajustés.")
+        .setDescription("Les positions, éléments manquants et permissions ont été réajustés.")
         .addFields(
           { name: `🎭 Rôles Restaurés (${result.restoredRoles.length})`, value: rolesText.length > 1024 ? rolesText.slice(0, 1000) + "\n*...*" : rolesText },
-          { name: `📁 Salons Restaurés (${result.restoredChannels.length})`, value: channelsText.length > 1024 ? channelsText.slice(0, 1000) + "\n*...*" : channelsText }
+          { name: `📁 Salons Restaurés (${result.restoredChannels.length})`, value: channelsText.length > 1024 ? channelsText.slice(0, 1000) + "\n*...*" : channelsText },
+          { name: `🔐 Permissions de salons réappliquées`, value: `\`${result.repairedPermissions ?? 0}\` salon(s)/catégorie(s)` }
         )
         .setFooter({ text: "Lotus Security System" });
 

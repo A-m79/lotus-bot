@@ -10,7 +10,11 @@ const { getGuildConfig } = require("./utils/configCache");
 const { registerAntiNuke } = require("./modules/antiNuke");
 const { registerAntiRaid } = require("./modules/antiRaid");
 const { registerAntiSpam } = require("./modules/antiSpam");
-const { registerAntiRoleNuke } = require("./modules/antiRoleNuke");
+// NOTE : antiRoleNuke.js n'est plus enregistré. Sa logique (détection de création/
+// suppression massive de rôles) a été fusionnée dans antiNuke.js pour éviter le
+// double-tracking : les deux modules surveillaient roleDelete en parallèle avec des
+// seuils et une whitelist différents, ce qui pouvait déclencher une double sanction.
+// Le fichier modules/antiRoleNuke.js peut être supprimé du projet sans impact.
 const { registerAltDetection } = require("./modules/altDetection");
 
 const client = new Client({
@@ -81,7 +85,6 @@ async function main() {
   registerAntiNuke(client);
   registerAntiRaid(client);
   registerAntiSpam(client);
-  registerAntiRoleNuke(client);
   registerAltDetection(client);
 
   await client.login(process.env.DISCORD_TOKEN);

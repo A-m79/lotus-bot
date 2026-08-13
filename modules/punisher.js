@@ -5,17 +5,35 @@ const SecurityLog = require("../models/SecurityLog");
 // Verrou en mémoire pour éviter d'exécuter des sanctions/MP en double lors d'une rafale de messages
 const activePunishments = new Set();
 
-// Liste des actions graves nécessitant un ping @here immédiat
+// Liste des actions graves nécessitant un ping @here immédiat.
+// NOTE : la comparaison avec actionType se fait de façon normalisée (voir isSevereAction),
+// donc "channelDelete" matche bien "CHANNEL_DELETE" ci-dessous, peu importe la casse
+// utilisée par le module appelant (camelCase pour antiNuke/antiSpam, SNAKE_CASE pour
+// antiRoleNuke/altDetection). Avant ce correctif, ce mismatch de casse faisait que la
+// quasi-totalité des vraies menaces (bans en masse, suppression de salons, ajout de bot)
+// ne déclenchait jamais le ping @here.
 const SEVERE_ACTIONS = [
-  "MASS_BAN",
-  "MASS_KICK",
-  "CHANNEL_NUKE",
+  "CHANNEL_DELETE",
+  "ROLE_DELETE",
+  "MEMBER_BAN",
+  "MEMBER_KICK",
+  "WEBHOOK_CREATE",
+  "BOT_ADD",
+  "DANGEROUS_ROLE_UPDATE",
   "ROLE_NUKE",
-  "WEBHOOK_NUKE",
+  "ALT_DETECTION",
   "ANTI_RAID",
   "PANIC_MODE",
-  "BOT_ADD",
 ];
+
+function normalizeActionType(str) {
+  return String(str).replace(/_/g, "").toUpperCase();
+}
+
+function isSevereAction(actionType) {
+  const normalized = normalizeActionType(actionType);
+  return SEVERE_ACTIONS.some((a) => normalizeActionType(a) === normalized);
+}
 
 function generateCaseId() {
   return `CASE-${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
@@ -236,9 +254,10 @@ async function punish({
         .setFooter({ text: `Lotus Security System • Case #${caseId}` })
         .setTimestamp();
 
-      // Ping @here uniquement si c'est une action de menace grave
-      const isSevere = SEVERE_ACTIONS.includes(actionType.toUpperCase());
-      const messageContent = isSevere ? "🚨 @here **Alerte Sécurité Majeure Détectée !**" : undefined;
+      // Ping @here uniquement si c'est une action de menace grave (comparaison normalisée)
+      const messageContent = isSevereAction(actionType)
+        ? "🚨 @here **Alerte Sécurité Majeure Détectée !**"
+        : undefined;
 
       await channel.send({ content: messageContent, embeds: [embed] }).catch(() => null);
     }
