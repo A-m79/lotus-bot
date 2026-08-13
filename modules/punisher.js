@@ -1,19 +1,12 @@
-const { EmbedBuilder, PermissionFlagsBits } = require("discord.js");
+const { EmbedBuilder } = require("discord.js");
 const config = require("../config/config");
 const SecurityLog = require("../models/SecurityLog");
 
-// Verrou en mémoire pour éviter d'exécuter des sanctions/MP en double lors d'une rafale de messages
 const activePunishments = new Set();
 
-// Liste des actions graves nécessitant un ping @here immédiat.
-// NOTE : la comparaison avec actionType se fait de façon normalisée (voir isSevereAction),
-// donc "channelDelete" matche bien "CHANNEL_DELETE" ci-dessous, peu importe la casse
-// utilisée par le module appelant (camelCase pour antiNuke/antiSpam, SNAKE_CASE pour
-// antiRoleNuke/altDetection). Avant ce correctif, ce mismatch de casse faisait que la
-// quasi-totalité des vraies menaces (bans en masse, suppression de salons, ajout de bot)
-// ne déclenchait jamais le ping @here.
 const SEVERE_ACTIONS = [
   "CHANNEL_DELETE",
+  "CHANNEL_UPDATE",
   "ROLE_DELETE",
   "MEMBER_BAN",
   "MEMBER_KICK",
@@ -24,6 +17,9 @@ const SEVERE_ACTIONS = [
   "ALT_DETECTION",
   "ANTI_RAID",
   "PANIC_MODE",
+  "EMOJI_DELETE",
+  "STICKER_DELETE",
+  "GUILD_UPDATE",
 ];
 
 function normalizeActionType(str) {
@@ -48,13 +44,10 @@ async function punish({
   details = {},
   customSanction = null,
 }) {
-  // Ignorer si une sanction est déjà en cours d'application pour cet utilisateur
-  if (activePunishments.has(executorId)) {
-    return null;
-  }
+  if (activePunishments.has(executorId)) return null;
 
   activePunishments.add(executorId);
-  setTimeout(() => activePunishments.delete(executorId), 10000); // Libération après 10s
+  setTimeout(() => activePunishments.delete(executorId), 10000);
 
   const caseId = generateCaseId();
   const punishment = customSanction || guildConfig?.punishment || config.DEFAULT_PUNISHMENT;
@@ -67,15 +60,12 @@ async function punish({
     targetUser = member
       ? member.user
       : await guild.client.users.fetch(executorId).catch(() => null);
-  } catch {
-    // Membre inexistant ou hors du serveur
-  }
+  } catch {}
 
   let punishmentApplied = "none";
   let statusIcon = "⚙️";
   let success = false;
 
-  // 1. Contrôle de hiérarchie des rôles
   const me = await guild.members.fetchMe().catch(() => guild.members.me);
   const canManageTarget =
     member &&
@@ -83,7 +73,6 @@ async function punish({
     me &&
     me.roles.highest.position > member.roles.highest.position;
 
-  // 2. Exécution de la sanction
   try {
     if (member && canManageTarget) {
       switch (punishment) {
@@ -104,9 +93,7 @@ async function punish({
         case "timeout":
           const timeoutRoles = guildConfig?.quarantineRoleId ? [guildConfig.quarantineRoleId] : [];
           await member.roles.set(timeoutRoles, `[Lotus #${caseId}] Retrait des rôles + Isolement`);
-
           await new Promise((resolve) => setTimeout(resolve, 1500));
-
           await member.timeout(24 * 60 * 60 * 1000, `[Lotus #${caseId}] ${reason}`);
           punishmentApplied = "STRIP_ROLES + TIMEOUT (24h)";
           statusIcon = "☣️";
@@ -115,9 +102,7 @@ async function punish({
 
         case "quarantine":
           if (guildConfig?.quarantineRoleId) {
-            const currentRoles = member.roles.cache
-              .filter((r) => r.id !== guild.id)
-              .map((r) => r.id);
+            const currentRoles = member.roles.cache.filter((r) => r.id !== guild.id).map((r) => r.id);
             details.previousRoles = currentRoles;
             await member.roles.set([guildConfig.quarantineRoleId], `[Lotus #${caseId}] ${reason}`);
             punishmentApplied = "QUARANTAINE (Isolement)";
@@ -159,7 +144,7 @@ async function punish({
     statusIcon = "⚠️";
   }
 
-  // 3. Notification MP (DM)
+  // Notification MP au suspect
   if (targetUser && !targetUser.bot && success) {
     const dmEmbed = new EmbedBuilder()
       .setColor("#FF2A2A")
@@ -176,7 +161,7 @@ async function punish({
     await targetUser.send({ embeds: [dmEmbed] }).catch(() => null);
   }
 
-  // 4. Historisation MongoDB
+  // Historisation MongoDB
   await SecurityLog.create({
     caseId,
     guildId: guild.id,
@@ -188,78 +173,37 @@ async function punish({
     timestamp: new Date(),
   }).catch((err) => console.error("[SecurityLog DB Error]:", err));
 
-  // 5. Logs salon (#logs-lotus ou #alert)
+  // Logs salon ou Fallback DM au proprio si le salon de log est introuvable
   const targetChannelId = guildConfig?.logChannelId || guildConfig?.alertChannelId;
+  let logSent = false;
+
+  const embed = new EmbedBuilder()
+    .setColor(success ? "#FF2A2A" : "#FFCC00")
+    .setAuthor({ name: "LOTUS SECURITY SYSTEM", iconURL: guild.iconURL({ dynamic: true }) || undefined })
+    .setTitle(`${statusIcon} ${success ? "Menace Neutralisée" : "Alerte Sécurité"} — #${caseId}`)
+    .setDescription(`> **Motif :** \`${reason}\``)
+    .addFields(
+      { name: "👤 Utilisateur", value: targetUser ? `${targetUser}\n\`${targetUser.tag}\`\n\`ID: ${executorId}\`` : `\`ID: ${executorId}\``, inline: true },
+      { name: "🛡️ Détecteur", value: `\`${actionType.toUpperCase()}\``, inline: true },
+      { name: "⚡ Sanction", value: `\`${punishmentApplied}\``, inline: true }
+    )
+    .setFooter({ text: `Lotus Security System • Case #${caseId}` })
+    .setTimestamp();
 
   if (targetChannelId) {
     const channel = await guild.channels.fetch(targetChannelId).catch(() => null);
-
     if (channel?.isTextBased()) {
-      const colors = {
-        ban: "#000000",
-        kick: "#FF0055",
-        timeout: "#FF9900",
-        quarantine: "#A800FF",
-        stripRoles: "#FFCC00",
-      };
-      const embedColor = success
-        ? colors[punishment] || config.EMBED_COLOR_ALERT || "#FF2A2A"
-        : "#FFCC00";
-
-      const embed = new EmbedBuilder()
-        .setColor(embedColor)
-        .setAuthor({
-          name: `LOTUS SECURITY SYSTEM`,
-          iconURL: guild.iconURL({ dynamic: true }) || undefined,
-        })
-        .setTitle(`${statusIcon} ${success ? "Menace Neutralisée" : "Alerte Sécurité"} — #${caseId}`)
-        .setDescription(`> **Motif :** \`${reason}\``)
-        .addFields(
-          {
-            name: "👤 Utilisateur",
-            value: targetUser
-              ? `${targetUser}\n\`${targetUser.tag}\`\n\`ID: ${executorId}\``
-              : `\`ID: ${executorId}\``,
-            inline: true,
-          },
-          {
-            name: "🛡️ Détecteur",
-            value: `\`${actionType.toUpperCase()}\``,
-            inline: true,
-          },
-          {
-            name: "⚡ Sanction",
-            value: `\`${punishmentApplied}\``,
-            inline: true,
-          }
-        );
-
-      const filteredDetails = Object.entries(details).filter(([key]) => key !== "previousRoles");
-      if (filteredDetails.length > 0) {
-        const formattedDetails = filteredDetails
-          .map(([key, val]) => `> **${key}** : \`${val}\``)
-          .join("\n");
-        embed.addFields({
-          name: "🔍 Métadonnées",
-          value: formattedDetails,
-          inline: false,
-        });
-      }
-
-      if (targetUser?.displayAvatarURL()) {
-        embed.setThumbnail(targetUser.displayAvatarURL({ dynamic: true, size: 256 }));
-      }
-
-      embed
-        .setFooter({ text: `Lotus Security System • Case #${caseId}` })
-        .setTimestamp();
-
-      // Ping @here uniquement si c'est une action de menace grave (comparaison normalisée)
-      const messageContent = isSevereAction(actionType)
-        ? "🚨 @here **Alerte Sécurité Majeure Détectée !**"
-        : undefined;
-
+      const messageContent = isSevereAction(actionType) ? "🚨 @here **Alerte Sécurité Majeure Détectée !**" : undefined;
       await channel.send({ content: messageContent, embeds: [embed] }).catch(() => null);
+      logSent = true;
+    }
+  }
+
+  // Fallback DM au Propriétaire si salon de logs indisponible ou action sévère
+  if (!logSent || isSevereAction(actionType)) {
+    const owner = await guild.fetchOwner().catch(() => null);
+    if (owner) {
+      await owner.send({ content: `🚨 **Alerte Sécurité sur ${guild.name}**`, embeds: [embed] }).catch(() => null);
     }
   }
 

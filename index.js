@@ -1,35 +1,34 @@
 require("dotenv").config();
 const fs = require("fs");
 const path = require("path");
-const { Client, GatewayIntentBits, Partials, Collection } = require("discord.js");
+const { Client, GatewayIntentBits, Partials, Collection, PermissionFlagsBits } = require("discord.js");
 
 const { connectDatabase } = require("./database/connect");
 const { keepAlive } = require("./keepAlive");
 const { getGuildConfig } = require("./utils/configCache");
+const { handleRestoreRolesButton } = require("./utils/logProtector");
+const { takeBackup } = require("./utils/backupEngine");
+const config = require("./config/config");
 
 const { registerAntiNuke } = require("./modules/antiNuke");
 const { registerAntiRaid } = require("./modules/antiRaid");
 const { registerAntiSpam } = require("./modules/antiSpam");
-// NOTE : antiRoleNuke.js n'est plus enregistré. Sa logique (détection de création/
-// suppression massive de rôles) a été fusionnée dans antiNuke.js pour éviter le
-// double-tracking : les deux modules surveillaient roleDelete en parallèle avec des
-// seuils et une whitelist différents, ce qui pouvait déclencher une double sanction.
-// Le fichier modules/antiRoleNuke.js peut être supprimé du projet sans impact.
 const { registerAltDetection } = require("./modules/altDetection");
 
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildModeration, // bans
+    GatewayIntentBits.GuildModeration,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildWebhooks,
+    GatewayIntentBits.GuildEmojisAndStickers,
   ],
   partials: [Partials.GuildMember, Partials.User],
 });
 
-// --- Chargement des commandes ---
+// Chargement des commandes
 client.commands = new Collection();
 const commandsPath = path.join(__dirname, "commands");
 const commandFiles = fs.readdirSync(commandsPath).filter((f) => f.endsWith(".js"));
@@ -39,13 +38,18 @@ for (const file of commandFiles) {
   client.commands.set(command.data.name, command);
 }
 
+// Interactions : Commandes Slash + Boutons
 client.on("interactionCreate", async (interaction) => {
+  // 1. Bouton de rétablissement de rôles (logProtector)
+  if (interaction.isButton() && interaction.customId.startsWith("restore_roles_")) {
+    return handleRestoreRolesButton(interaction);
+  }
+
   if (!interaction.isChatInputCommand()) return;
 
   const command = client.commands.get(interaction.commandName);
   if (!command) return;
 
-  // --- Restriction stricte Whitelist / Owners ---
   if (interaction.guildId) {
     const guildConfig = await getGuildConfig(interaction.guildId).catch(() => null);
     const isOwner = interaction.user.id === interaction.guild?.ownerId;
@@ -73,23 +77,47 @@ client.on("interactionCreate", async (interaction) => {
   }
 });
 
+// Tâches Périodiques (Backup 24h & Diagnostic)
+function setupCronTasks() {
+  // Backup auto toutes les 24h
+  setInterval(async () => {
+    console.log("[AUTO-BACKUP] Lancement de la sauvegarde automatique globale...");
+    for (const guild of client.guilds.cache.values()) {
+      await takeBackup(guild).catch((e) => console.error(`[AUTO-BACKUP] Échec sur ${guild.name}:`, e.message));
+    }
+  }, config.AUTO_BACKUP_INTERVAL_MS);
+
+  // Auto-diagnostic des perms de Lotus toutes les 15 minutes
+  setInterval(async () => {
+    for (const guild of client.guilds.cache.values()) {
+      const me = guild.members.me || (await guild.members.fetchMe().catch(() => null));
+      if (me && !me.permissions.has(PermissionFlagsBits.Administrator)) {
+        const owner = await guild.fetchOwner().catch(() => null);
+        if (owner) {
+          await owner.send(
+            `⚠️ **Rappel Diagnostic :** Lotus n'a plus les permissions Administrateur sur **${guild.name}**.`
+          ).catch(() => null);
+        }
+      }
+    }
+  }, config.SELF_DIAGNOSTIC_INTERVAL_MS);
+}
+
 client.once("ready", () => {
   console.log(`[Lotus] Connecté en tant que ${client.user.tag}.`);
-  client.user.setActivity("la sécurité du serveur 🛡️", { type: 3 }); // Watching
+  client.user.setActivity("la sécurité du serveur 🛡️", { type: 3 });
+  setupCronTasks();
 });
 
 async function main() {
   await connectDatabase();
 
-  // Modules de protection
   registerAntiNuke(client);
   registerAntiRaid(client);
   registerAntiSpam(client);
   registerAltDetection(client);
 
   await client.login(process.env.DISCORD_TOKEN);
-
-  // Serveur web pour garder le process actif sur Render (ping via UptimeRobot)
   keepAlive(client);
 }
 

@@ -4,9 +4,8 @@ const GuildConfigSchema = new Schema(
   {
     guildId: { type: String, required: true, unique: true, index: true },
 
-    // Salon où Lotus envoie les logs de sécurité
+    // Salons de logs/alertes
     logChannelId: { type: String, default: null },
-    // Salon où Lotus envoie les alertes critiques (nuke/raid détecté)
     alertChannelId: { type: String, default: null },
 
     // Modules activés
@@ -15,10 +14,17 @@ const GuildConfigSchema = new Schema(
     antiSpamEnabled: { type: Boolean, default: true },
     altDetectionEnabled: { type: Boolean, default: true },
 
-    // Seuils custom (fusionnés avec les defaults si non définis)
+    // Système de vérification à l'entrée (Gate)
+    verificationEnabled: { type: Boolean, default: false },
+    unverifiedRoleId: { type: String, default: null },
+    verifiedRoleId: { type: String, default: null },
+    verificationChannelId: { type: String, default: null },
+
+    // Seuils custom
     thresholds: {
       channelDelete: Number,
       channelCreate: Number,
+      channelUpdate: Number,
       roleDelete: Number,
       roleCreate: Number,
       memberBan: Number,
@@ -26,6 +32,9 @@ const GuildConfigSchema = new Schema(
       webhookCreate: Number,
       botAdd: Number,
       dangerousRoleUpdate: Number,
+      emojiDelete: Number,
+      stickerDelete: Number,
+      guildUpdate: Number,
       antiSpam: Number,
     },
 
@@ -35,13 +44,8 @@ const GuildConfigSchema = new Schema(
       default: "stripRoles",
     },
 
-    // Rôle "quarantaine" utilisé pour isoler un compte suspect/compromis
     quarantineRoleId: { type: String, default: null },
-
-    // État du lockdown (anti-raid déclenché)
     lockdownActive: { type: Boolean, default: false },
-
-    // Liste blanche : ID whitelist (ne déclenchent jamais l'anti-nuke)
     whitelist: { type: [String], default: [] },
   },
   { timestamps: true }

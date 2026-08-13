@@ -1,23 +1,18 @@
-const { AuditLogEvent } = require("discord.js");
+const { AuditLogEvent, PermissionFlagsBits, EmbedBuilder } = require("discord.js");
 const config = require("../config/config");
 const rateTracker = require("../utils/rateTracker");
 const { getExecutor } = require("../utils/getExecutor");
 const { getGuildConfig } = require("../utils/configCache");
 const { punish } = require("./punisher");
+const { handleLogChannelDeletion } = require("../utils/logProtector");
 
-/**
- * Retourne le seuil effectif pour une action donnée (config serveur > défaut global)
- */
 function getThreshold(guildConfig, actionType) {
   return (
     guildConfig?.thresholds?.[actionType] ??
-    config.DEFAULT_THRESHOLDS[actionType]
+    config.DEFAULT_THRESHOLDS[actionType] ?? 3
   );
 }
 
-/**
- * Vrai si l'ID est whitelisté (jamais sanctionné, même owner/bot lui-même)
- */
 function isWhitelisted(guild, guildConfig, userId) {
   if (userId === guild.ownerId) return true;
   if (userId === guild.client.user.id) return true;
@@ -25,10 +20,6 @@ function isWhitelisted(guild, guildConfig, userId) {
   return guildConfig?.whitelist?.includes(userId) ?? false;
 }
 
-/**
- * Fonction centrale : incrémente le compteur, compare au seuil, sanctionne si dépassé.
- * Retourne true si une sanction a été appliquée (permet d'éviter les triggers redondants).
- */
 async function checkAndPunish({ guild, executorId, actionType, reasonLabel, details }) {
   const guildConfig = await getGuildConfig(guild.id);
 
@@ -58,12 +49,11 @@ function registerAntiNuke(client) {
   // --- Suppression de salons ---
   client.on("channelDelete", async (channel) => {
     if (!channel.guild) return;
-    const executor = await getExecutor(
-      channel.guild,
-      AuditLogEvent.ChannelDelete,
-      channel.id
-    );
+    const executor = await getExecutor(channel.guild, AuditLogEvent.ChannelDelete, channel.id);
     if (!executor) return;
+
+    // Protection du salon de logs/alertes
+    await handleLogChannelDeletion(channel.guild, channel, executor);
 
     await checkAndPunish({
       guild: channel.guild,
@@ -74,14 +64,10 @@ function registerAntiNuke(client) {
     });
   });
 
-  // --- Création massive de salons (spam / préparation de nuke) ---
+  // --- Création massive de salons ---
   client.on("channelCreate", async (channel) => {
     if (!channel.guild) return;
-    const executor = await getExecutor(
-      channel.guild,
-      AuditLogEvent.ChannelCreate,
-      channel.id
-    );
+    const executor = await getExecutor(channel.guild, AuditLogEvent.ChannelCreate, channel.id);
     if (!executor) return;
 
     await checkAndPunish({
@@ -93,10 +79,31 @@ function registerAntiNuke(client) {
     });
   });
 
-  // --- Suppression de rôles ---
-  // (fusionné avec l'ancien module antiRoleNuke.js pour éviter le double-tracking :
-  // ce handler seul gère désormais roleDelete, avec la whitelist complète et le
-  // check antiNukeEnabled que l'ancien module n'avait pas)
+  // --- Modifications de perms de salon (ex: salon privé rendu public à @everyone) ---
+  client.on("channelUpdate", async (oldChannel, newChannel) => {
+    if (!newChannel.guild) return;
+
+    const oldEveryone = oldChannel.permissionOverwrites.cache.get(newChannel.guild.id);
+    const newEveryone = newChannel.permissionOverwrites.cache.get(newChannel.guild.id);
+
+    const oldCanView = !oldEveryone?.deny.has(PermissionFlagsBits.ViewChannel);
+    const newCanView = newEveryone ? !newEveryone.deny.has(PermissionFlagsBits.ViewChannel) : true;
+
+    if (!oldCanView && newCanView) {
+      const executor = await getExecutor(newChannel.guild, AuditLogEvent.ChannelOverwriteUpdate, newChannel.id);
+      if (!executor) return;
+
+      await checkAndPunish({
+        guild: newChannel.guild,
+        executorId: executor.id,
+        actionType: "channelUpdate",
+        reasonLabel: `Rendu du salon #${newChannel.name} accessible à @everyone`,
+        details: { channelId: newChannel.id, channelName: newChannel.name },
+      });
+    }
+  });
+
+  // --- Suppression & Création de Rôles ---
   client.on("roleDelete", async (role) => {
     const executor = await getExecutor(role.guild, AuditLogEvent.RoleDelete, role.id);
     if (!executor) return;
@@ -110,9 +117,6 @@ function registerAntiNuke(client) {
     });
   });
 
-  // --- Création massive de rôles ---
-  // (idem : reprend ce que faisait antiRoleNuke.js sur roleCreate, mais via le
-  // pipeline commun checkAndPunish plutôt qu'un tracker parallèle indépendant)
   client.on("roleCreate", async (role) => {
     const executor = await getExecutor(role.guild, AuditLogEvent.RoleCreate, role.id);
     if (!executor) return;
@@ -126,7 +130,7 @@ function registerAntiNuke(client) {
     });
   });
 
-  // --- Bans en masse ---
+  // --- Bans & Kicks en masse ---
   client.on("guildBanAdd", async (ban) => {
     const executor = await getExecutor(ban.guild, AuditLogEvent.MemberBanAdd, ban.user.id);
     if (!executor) return;
@@ -140,10 +144,9 @@ function registerAntiNuke(client) {
     });
   });
 
-  // --- Kicks en masse (détecté via memberRemove + audit log Kick) ---
   client.on("guildMemberRemove", async (member) => {
     const executor = await getExecutor(member.guild, AuditLogEvent.MemberKick, member.id, 3000);
-    if (!executor) return; // pas de kick correspondant -> départ volontaire, on ignore
+    if (!executor) return;
 
     await checkAndPunish({
       guild: member.guild,
@@ -154,14 +157,9 @@ function registerAntiNuke(client) {
     });
   });
 
-  // --- Création massive de webhooks ---
+  // --- Webhooks, Bots non autorisés ---
   client.on("webhooksUpdate", async (channel) => {
-    const executor = await getExecutor(
-      channel.guild,
-      AuditLogEvent.WebhookCreate,
-      undefined,
-      3000
-    );
+    const executor = await getExecutor(channel.guild, AuditLogEvent.WebhookCreate, undefined, 3000);
     if (!executor) return;
 
     await checkAndPunish({
@@ -173,16 +171,10 @@ function registerAntiNuke(client) {
     });
   });
 
-  // --- Ajout d'un bot non whitelisté = sanction immédiate (seuil = 1 par défaut) ---
   client.on("guildMemberAdd", async (member) => {
     if (!member.user.bot) return;
 
-    const executor = await getExecutor(
-      member.guild,
-      AuditLogEvent.BotAdd,
-      member.id,
-      5000
-    );
+    const executor = await getExecutor(member.guild, AuditLogEvent.BotAdd, member.id, 5000);
     if (!executor) return;
 
     await checkAndPunish({
@@ -194,56 +186,90 @@ function registerAntiNuke(client) {
     });
   });
 
-  // --- Attribution de permissions dangereuses à un rôle (ex: Administrator) ---
-  client.on("roleUpdate", async (oldRole, newRole) => {
-    const gainedDangerous = config.DANGEROUS_PERMISSIONS.some(
-      (perm) => !oldRole.permissions.has(perm) && newRole.permissions.has(perm)
-    );
-    if (!gainedDangerous) return;
-
-    const executor = await getExecutor(
-      newRole.guild,
-      AuditLogEvent.RoleUpdate,
-      newRole.id,
-      3000
-    );
+  // --- Suppression Émojis & Stickers ---
+  client.on("emojiDelete", async (emoji) => {
+    const executor = await getExecutor(emoji.guild, AuditLogEvent.EmojiDelete, emoji.id);
     if (!executor) return;
 
     await checkAndPunish({
-      guild: newRole.guild,
+      guild: emoji.guild,
       executorId: executor.id,
-      actionType: "dangerousRoleUpdate",
-      reasonLabel: `Attribution de permissions dangereuses au rôle ${newRole.name}`,
-      details: { roleId: newRole.id },
+      actionType: "emojiDelete",
+      reasonLabel: "Suppression massive d'émojis",
+      details: { emojiName: emoji.name },
     });
   });
 
-  // --- Attribution d'un rôle dangereux directement à un membre ---
-  client.on("guildMemberUpdate", async (oldMember, newMember) => {
-    const oldRoles = oldMember.roles.cache;
-    const newRoles = newMember.roles.cache;
-
-    const addedRoles = newRoles.filter((r) => !oldRoles.has(r.id));
-    const gainedDangerousRole = addedRoles.some((r) =>
-      config.DANGEROUS_PERMISSIONS.some((perm) => r.permissions.has(perm))
-    );
-    if (!gainedDangerousRole) return;
-
-    const executor = await getExecutor(
-      newMember.guild,
-      AuditLogEvent.MemberRoleUpdate,
-      newMember.id,
-      3000
-    );
+  client.on("stickerDelete", async (sticker) => {
+    const executor = await getExecutor(sticker.guild, AuditLogEvent.StickerDelete, sticker.id);
     if (!executor) return;
 
     await checkAndPunish({
-      guild: newMember.guild,
+      guild: sticker.guild,
       executorId: executor.id,
-      actionType: "dangerousRoleUpdate",
-      reasonLabel: `Attribution d'un rôle dangereux à ${newMember.user.tag}`,
-      details: { targetId: newMember.id },
+      actionType: "stickerDelete",
+      reasonLabel: "Suppression massive de stickers",
+      details: { stickerName: sticker.name },
     });
+  });
+
+  // --- Modification du Serveur (Nom, Vanity, Icône) ---
+  client.on("guildUpdate", async (oldGuild, newGuild) => {
+    const executor = await getExecutor(newGuild, AuditLogEvent.GuildUpdate, undefined, 3000);
+    if (!executor) return;
+
+    if (oldGuild.name !== newGuild.name || oldGuild.vanityURLCode !== newGuild.vanityURLCode) {
+      await checkAndPunish({
+        guild: newGuild,
+        executorId: executor.id,
+        actionType: "guildUpdate",
+        reasonLabel: "Modification suspecte des paramètres du serveur",
+        details: { oldName: oldGuild.name, newName: newGuild.name },
+      });
+    }
+  });
+
+  // --- Auto-Diagnostic : Détection Perte de Perms Admin sur Lotus ---
+  client.on("guildMemberUpdate", async (oldMember, newMember) => {
+    if (newMember.id !== client.user.id) return;
+
+    const hadAdmin = oldMember.permissions.has(PermissionFlagsBits.Administrator);
+    const hasAdmin = newMember.permissions.has(PermissionFlagsBits.Administrator);
+
+    if (hadAdmin && !hasAdmin) {
+      const executor = await getExecutor(newMember.guild, AuditLogEvent.MemberRoleUpdate, newMember.id, 3000);
+      const guild = newMember.guild;
+
+      const owner = await guild.fetchOwner().catch(() => null);
+      const adminRoles = guild.roles.cache.filter(
+        (r) => r.permissions.has(PermissionFlagsBits.Administrator) && !r.managed
+      );
+      const adminMentions = adminRoles.map((r) => `<@&${r.id}>`).join(" ") || "@here";
+
+      const embed = new EmbedBuilder()
+        .setTitle("🚨 URGENT : Perte des Droits Administrateur de Lotus !")
+        .setColor("#FF0000")
+        .setDescription(
+          `Les permissions Administrateur de Lotus ont été supprimées.\n\n` +
+          `• **Auteur de la modification :** ${executor ? `${executor.tag} (\`${executor.id}\`)` : "Inconnu"}\n` +
+          `• **Date & Heure :** <t:${Math.floor(Date.now() / 1000)}:F>\n\n` +
+          `⚠️ **Lotus ne peut plus protéger le serveur correctement tant que ses accès ne sont pas rétablis.**`
+        )
+        .setTimestamp();
+
+      if (owner) {
+        await owner.send({ embeds: [embed] }).catch(() => null);
+      }
+
+      const guildConfig = await getGuildConfig(guild.id);
+      const targetChannelId = guildConfig?.logChannelId || guildConfig?.alertChannelId;
+      if (targetChannelId) {
+        const channel = await guild.channels.fetch(targetChannelId).catch(() => null);
+        if (channel?.isTextBased()) {
+          await channel.send({ content: `🚨 ${adminMentions}`, embeds: [embed] }).catch(() => null);
+        }
+      }
+    }
   });
 
   console.log("[AntiNuke] Module chargé et event listeners actifs.");
