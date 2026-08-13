@@ -1,10 +1,15 @@
 const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits } = require("discord.js");
 const GuildConfig = require("../models/GuildConfig");
+const { invalidateGuildConfig } = require("./configCache");
 
-// Stockage temporaire en mémoire des rôles retirés pour rétablissement via bouton
+// Stockage temporaire des verrous et des rôles à rétablir
+const recreatingGuilds = new Set();
 const savedMemberRoles = new Map();
 
 async function handleLogChannelDeletion(guild, deletedChannel, executor) {
+  // 1. Anti-doublon : Si une reconstitution est déjà en cours sur ce serveur, on ignore
+  if (recreatingGuilds.has(guild.id)) return;
+
   const config = await GuildConfig.findOne({ guildId: guild.id });
   if (!config) return;
 
@@ -13,73 +18,85 @@ async function handleLogChannelDeletion(guild, deletedChannel, executor) {
 
   if (!isLogChannel && !isAlertChannel) return;
 
-  console.log(`[LOG-PROTECTOR] Suppression du salon de logs (${deletedChannel.name}) par ${executor.tag} sur ${guild.name}`);
+  // Activation du verrou
+  recreatingGuilds.add(guild.id);
 
-  // 1. Sanction Immédiate : Retrait de TOUS les rôles du suspect
-  const member = await guild.members.fetch(executor.id).catch(() => null);
-  if (member && member.manageable && member.id !== guild.ownerId) {
-    const rolesToSave = member.roles.cache.filter((r) => r.id !== guild.id).map((r) => r.id);
-    savedMemberRoles.set(`${guild.id}_${executor.id}`, rolesToSave);
+  try {
+    console.log(`[LOG-PROTECTOR] Suppression du salon de logs (${deletedChannel.name}) par ${executor.tag} sur ${guild.name}`);
 
-    await member.roles.set([], `[Lotus LogProtector] Suppression non autorisée du salon de logs #${deletedChannel.name}`).catch(() => null);
-  }
+    // 2. Sanction Immédiate : Retrait de TOUS les rôles du suspect
+    const member = await guild.members.fetch(executor.id).catch(() => null);
+    if (member && member.manageable && member.id !== guild.ownerId) {
+      const rolesToSave = member.roles.cache.filter((r) => r.id !== guild.id).map((r) => r.id);
+      savedMemberRoles.set(`${guild.id}_${executor.id}`, rolesToSave);
 
-  // 2. Auto-Reconstitution du Salon de Logs
-  const newChannel = await guild.channels
-    .create({
-      name: "alertes-lotus",
-      type: ChannelType.GuildText,
-      topic: "Salon de sécurité auto-recréé par Lotus Security System",
-      permissionOverwrites: [
-        {
-          id: guild.id,
-          deny: [PermissionFlagsBits.ViewChannel],
-        },
-        {
-          id: guild.client.user.id,
-          allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks],
-        },
-      ],
-    })
-    .catch(() => null);
+      await member.roles.set([], `[Lotus LogProtector] Suppression non autorisée du salon de logs #${deletedChannel.name}`).catch(() => null);
+    }
 
-  if (newChannel) {
-    if (isLogChannel) config.logChannelId = newChannel.id;
-    if (isAlertChannel) config.alertChannelId = newChannel.id;
-    await config.save();
-  }
+    // 3. Auto-Reconstitution du Salon (Gardant le même Nom et la même Catégorie)
+    const newChannel = await guild.channels
+      .create({
+        name: deletedChannel.name, // Reprend le nom du salon supprimé
+        type: ChannelType.GuildText,
+        parent: deletedChannel.parentId || null, // Se recrée dans la MÊME catégorie !
+        topic: "Salon de sécurité auto-recréé par Lotus Security System",
+        permissionOverwrites: [
+          {
+            id: guild.id,
+            deny: [PermissionFlagsBits.ViewChannel],
+          },
+          {
+            id: guild.client.user.id,
+            allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks],
+          },
+        ],
+      })
+      .catch(() => null);
 
-  // 3. Bouton interactif pour rétablir la personne en 1 clic
-  const restoreButton = new ButtonBuilder()
-    .setCustomId(`restore_roles_${guild.id}_${executor.id}`)
-    .setLabel(`Rétablir les rôles de ${executor.username}`)
-    .setStyle(ButtonStyle.Danger)
-    .setEmoji("🔄");
+    if (newChannel) {
+      if (isLogChannel) config.logChannelId = newChannel.id;
+      if (isAlertChannel) config.alertChannelId = newChannel.id;
+      await config.save();
 
-  const row = new ActionRowBuilder().addComponents(restoreButton);
+      // Refresh instantané du cache RAM
+      invalidateGuildConfig(guild.id);
+    }
 
-  const embed = new EmbedBuilder()
-    .setTitle("🚨 ALERTE CRITIQUE : Salon de Logs Supprimé !")
-    .setColor("#FF0000")
-    .setDescription(
-      `Le salon de sécurité **#${deletedChannel.name}** a été supprimé.\n\n` +
-      `• **Auteur :** ${executor.tag} (\`${executor.id}\`)\n` +
-      `• **Sanction :** Retrait immédiat de tous ses rôles.\n` +
-      `• **Action Lotus :** Salon auto-recréé avec succès ${newChannel ? `<#${newChannel.id}>` : "*(Échec)*"}.`
-    )
-    .setFooter({ text: "Lotus Security System • Protection Ultime" })
-    .setTimestamp();
+    // 4. Bouton interactif pour rétablir la personne en 1 clic
+    const restoreButton = new ButtonBuilder()
+      .setCustomId(`restore_roles_${guild.id}_${executor.id}`)
+      .setLabel(`Rétablir les rôles de ${executor.username}`)
+      .setStyle(ButtonStyle.Danger)
+      .setEmoji("🔄");
 
-  // 4. Fallback DM au Owner du serveur & Owner du bot
-  const owner = await guild.fetchOwner().catch(() => null);
-  if (owner) {
-    await owner.send({ embeds: [embed], components: [row] }).catch(() => null);
-  }
+    const row = new ActionRowBuilder().addComponents(restoreButton);
 
-  const botOwnerId = process.env.OWNER_ID;
-  if (botOwnerId && botOwnerId !== owner?.id) {
-    const botOwner = await guild.client.users.fetch(botOwnerId).catch(() => null);
-    if (botOwner) await botOwner.send({ embeds: [embed], components: [row] }).catch(() => null);
+    const embed = new EmbedBuilder()
+      .setTitle("🚨 ALERTE CRITIQUE : Salon de Logs Supprimé !")
+      .setColor("#FF0000")
+      .setDescription(
+        `Le salon de sécurité **#${deletedChannel.name}** a été supprimé.\n\n` +
+        `• **Auteur :** ${executor.tag} (\`${executor.id}\`)\n` +
+        `• **Sanction :** Retrait immédiat de tous ses rôles.\n` +
+        `• **Action Lotus :** Salon auto-recréé avec succès ${newChannel ? `<#${newChannel.id}>` : "*(Échec)*"}.`
+      )
+      .setFooter({ text: "Lotus Security System • Protection Ultime" })
+      .setTimestamp();
+
+    // 5. Fallback DM au Owner du serveur & Owner du bot
+    const owner = await guild.fetchOwner().catch(() => null);
+    if (owner) {
+      await owner.send({ embeds: [embed], components: [row] }).catch(() => null);
+    }
+
+    const botOwnerId = process.env.OWNER_ID;
+    if (botOwnerId && botOwnerId !== owner?.id) {
+      const botOwner = await guild.client.users.fetch(botOwnerId).catch(() => null);
+      if (botOwner) await botOwner.send({ embeds: [embed], components: [row] }).catch(() => null);
+    }
+  } finally {
+    // Relâche le verrou après 5 secondes
+    setTimeout(() => recreatingGuilds.delete(guild.id), 5000);
   }
 }
 
