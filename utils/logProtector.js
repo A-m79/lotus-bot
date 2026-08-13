@@ -7,7 +7,7 @@ const recreatingGuilds = new Set();
 const savedMemberRoles = new Map();
 
 async function handleLogChannelDeletion(guild, deletedChannel, executor) {
-  // 🛡️ IMMUNITÉ OWNER (Serveur + Bot)
+  // 🛡️ IMMUNITÉ OWNER
   const botOwnerId = process.env.OWNER_ID;
   const isOwner = executor.id === guild.ownerId || (botOwnerId && executor.id === botOwnerId);
 
@@ -54,10 +54,10 @@ async function handleLogChannelDeletion(guild, deletedChannel, executor) {
 
     let descriptionMsg = "";
 
-    // Recherche ou création de la catégorie parente Lotus de secours
+    // Recherche ou création garantie de la catégorie parente Lotus
     let parentCategory = deletedChannel.parentId ? guild.channels.cache.get(deletedChannel.parentId) : null;
     if (!parentCategory) {
-      parentCategory = guild.channels.cache.find((c) => c.type === ChannelType.GuildCategory && c.name.toLowerCase().includes("lotus"));
+      parentCategory = guild.channels.cache.find((c) => c.type === ChannelType.GuildCategory && (c.name.toLowerCase().includes("lotus") || c.name.toLowerCase().includes("sécurité")));
     }
     if (!parentCategory) {
       parentCategory = await guild.channels
@@ -95,17 +95,20 @@ async function handleLogChannelDeletion(guild, deletedChannel, executor) {
         `• **Sanction :** Retrait de ses rôles.\n` +
         `• **Action :** Catégorie auto-recréée ${newCategory ? `<#${newCategory.id}>` : "*(Échec)*"}.`;
     } else if (isQuarantineChannel) {
-      // Recréation et replacement explicite sous la catégorie Lotus
+      // Recréation de la base quarantaine
       const { quarantineChannel } = await ensureQuarantineSetup(guild);
+      
+      // Forçage explicite du placement direct dans la catégorie SÉCURITÉ LOTUS avec un petit délai de sécurité
       if (quarantineChannel && parentCategory) {
-        await quarantineChannel.setParent(parentCategory.id).catch(() => null);
+        await new Promise((r) => setTimeout(r, 500));
+        await quarantineChannel.setParent(parentCategory.id, { lockPermissions: false }).catch(() => null);
       }
 
       descriptionMsg =
         `Le salon de quarantaine **#🔒-quarantaine** a été supprimé.\n\n` +
         `• **Auteur :** ${executor.tag} (\`${executor.id}\`)\n` +
         `• **Sanction :** Retrait de ses rôles.\n` +
-        `• **Action :** Salon de quarantaine auto-recréé et replacé ${quarantineChannel ? `<#${quarantineChannel.id}>` : "*(Échec)*"}.`;
+        `• **Action :** Salon de quarantaine auto-recréé et rangé dans **${parentCategory ? parentCategory.name : "SÉCURITÉ LOTUS"}** ${quarantineChannel ? `<#${quarantineChannel.id}>` : ""}.`;
     } else {
       let channelTypeLabel = "sécurité";
       if (isLogChannel && isAlertChannel) channelTypeLabel = "logs & alertes";
