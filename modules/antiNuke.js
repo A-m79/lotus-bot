@@ -81,16 +81,25 @@ function registerAntiNuke(client) {
   // --- Création massive de salons ---
   client.on("channelCreate", async (channel) => {
     if (!channel.guild) return;
+
+    // Petit délai (500ms) pour laisser le temps à Discord d'inscrire l'action dans les Audit Logs
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
     const executor = await getExecutor(channel.guild, AuditLogEvent.ChannelCreate, channel.id);
     if (!executor) return;
 
-    await checkAndPunish({
+    const punished = await checkAndPunish({
       guild: channel.guild,
       executorId: executor.id,
       actionType: "channelCreate",
       reasonLabel: "Création massive de salons",
       details: { channelId: channel.id, channelName: channel.name },
     });
+
+    // 🧹 ROLLBACK : Si la création déclenche le Nuke, on supprime le salon créé
+    if (punished) {
+      await channel.delete("[Lotus Anti-Nuke] Nettoyage suite à création massive").catch(() => null);
+    }
   });
 
   // --- Modifications de perms de salon (ex: salon privé rendu public à @everyone) ---
@@ -104,6 +113,7 @@ function registerAntiNuke(client) {
     const newCanView = newEveryone ? !newEveryone.deny.has(PermissionFlagsBits.ViewChannel) : true;
 
     if (!oldCanView && newCanView) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
       const executor = await getExecutor(newChannel.guild, AuditLogEvent.ChannelOverwriteUpdate, newChannel.id);
       if (!executor) return;
 
@@ -132,16 +142,21 @@ function registerAntiNuke(client) {
   });
 
   client.on("roleCreate", async (role) => {
+    await new Promise((resolve) => setTimeout(resolve, 500));
     const executor = await getExecutor(role.guild, AuditLogEvent.RoleCreate, role.id);
     if (!executor) return;
 
-    await checkAndPunish({
+    const punished = await checkAndPunish({
       guild: role.guild,
       executorId: executor.id,
       actionType: "roleCreate",
       reasonLabel: "Création massive de rôles",
       details: { roleId: role.id, roleName: role.name },
     });
+
+    if (punished) {
+      await role.delete("[Lotus Anti-Nuke] Nettoyage rôle parasite").catch(() => null);
+    }
   });
 
   // --- Bans & Kicks en masse ---
@@ -173,6 +188,7 @@ function registerAntiNuke(client) {
 
   // --- Webhooks, Bots non autorisés ---
   client.on("webhooksUpdate", async (channel) => {
+    await new Promise((resolve) => setTimeout(resolve, 500));
     const executor = await getExecutor(channel.guild, AuditLogEvent.WebhookCreate, undefined, 3000);
     if (!executor) return;
 
@@ -188,6 +204,7 @@ function registerAntiNuke(client) {
   client.on("guildMemberAdd", async (member) => {
     if (!member.user.bot) return;
 
+    await new Promise((resolve) => setTimeout(resolve, 500));
     const executor = await getExecutor(member.guild, AuditLogEvent.BotAdd, member.id, 5000);
     if (!executor) return;
 
@@ -286,7 +303,7 @@ function registerAntiNuke(client) {
     }
   });
 
-  console.log("[AntiNuke Pro] Module Zero-Trust chargé et actif.");
+  console.log("[AntiNuke Pro] Module Zero-Trust + Auto-Rollback actif.");
 }
 
 module.exports = { registerAntiNuke };
