@@ -23,4 +23,8 @@ function invalidate(guildId) {
   cache.delete(guildId);
 }
 
-module.exports = { getGuildConfig, invalidate };
+module.exports = { 
+  getGuildConfig, 
+  invalidate,
+  invalidateGuildConfig: invalidate // 👈 Alias de sécurité pour logProtector.js
+};

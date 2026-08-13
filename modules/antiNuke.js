@@ -4,7 +4,7 @@ const rateTracker = require("../utils/rateTracker");
 const { getExecutor } = require("../utils/getExecutor");
 const { getGuildConfig } = require("../utils/configCache");
 const { punish } = require("./punisher");
-const { handleLogChannelDeletion } = require("../utils/logProtector");
+const { handleLogChannelDeletion, handleRoleDeletion } = require("../utils/logProtector");
 
 // Suivi temporaire des salons créés par utilisateur pour le Rollback complet
 const createdChannelsTracker = new Map();
@@ -17,7 +17,6 @@ function trackCreatedChannel(guildId, userId, channelId) {
   const userChannels = createdChannelsTracker.get(key);
   userChannels.push({ channelId, timestamp: Date.now() });
 
-  // Nettoyage automatique des entrées de plus de (ANTINUKE_WINDOW_MS)
   const windowMs = config.ANTINUKE_WINDOW_MS || 10000;
   const filtered = userChannels.filter((item) => Date.now() - item.timestamp < windowMs);
   createdChannelsTracker.set(key, filtered);
@@ -37,7 +36,6 @@ function getThreshold(guildConfig, actionType) {
   );
 }
 
-// 🛡️ IMMUNITÉ ABSOLUE : Réservée au Owner du serveur, au Bot et au Owner du Bot
 function isOwner(guild, userId) {
   if (userId === guild.ownerId) return true;
   if (userId === guild.client.user.id) return true;
@@ -49,10 +47,6 @@ function isWhitelisted(guildConfig, userId) {
   return guildConfig?.whitelist?.includes(userId) ?? false;
 }
 
-/**
- * Helper sécurisé : fait jusqu'à 3 tentatives avec getExecutor 
- * pour ne jamais rater un log à cause des délais de synchro de Discord
- */
 async function getExecutorWithRetry(guild, auditLogEvent, targetId = undefined, maxDelay = 3000, attempts = 3) {
   for (let i = 0; i < attempts; i++) {
     const executor = await getExecutor(guild, auditLogEvent, targetId, maxDelay);
@@ -67,15 +61,11 @@ async function checkAndPunish({ guild, executorId, actionType, reasonLabel, deta
 
   if (!guildConfig.antiNukeEnabled) return false;
 
-  // 1. Check Owner (Immunité Totale)
   if (isOwner(guild, executorId)) return false;
 
   const baseThreshold = getThreshold(guildConfig, actionType);
   const isWL = isWhitelisted(guildConfig, executorId);
 
-  // 2. SEUIL ZERO-TRUST :
-  // Un Whitelisté a une marge (+3 actions) pour ses tâches de modération/maintenance.
-  // Mais s'il dépasse ce seuil critique, la neutralisation se déclenche !
   const threshold = isWL ? baseThreshold + 3 : baseThreshold;
 
   const count = rateTracker.hit(guild.id, executorId, actionType, config.ANTINUKE_WINDOW_MS || 10000);
@@ -103,7 +93,7 @@ function registerAntiNuke(client) {
     const executor = await getExecutorWithRetry(channel.guild, AuditLogEvent.ChannelDelete, channel.id);
     if (!executor) return;
 
-    // Protection du salon de logs/alertes
+    // Protection du salon de logs/alertes/quarantaine
     await handleLogChannelDeletion(channel.guild, channel, executor);
 
     await checkAndPunish({
@@ -122,7 +112,6 @@ function registerAntiNuke(client) {
     const executor = await getExecutorWithRetry(channel.guild, AuditLogEvent.ChannelCreate, channel.id);
     if (!executor) return;
 
-    // Enregistre ce salon dans l'historique récent de cet utilisateur
     trackCreatedChannel(channel.guild.id, executor.id, channel.id);
 
     const punished = await checkAndPunish({
@@ -133,11 +122,9 @@ function registerAntiNuke(client) {
       details: { channelId: channel.id, channelName: channel.name },
     });
 
-    // 🧹 ROLLBACK TOTAL : Si la création déclenche le Nuke, on supprime TOUS les salons créés par l'attaquant dans la fenêtre
     if (punished) {
       const channelsToDelete = getAndClearCreatedChannels(channel.guild.id, executor.id);
       
-      // S'assurer que le salon actuel est bien inclus
       if (!channelsToDelete.includes(channel.id)) {
         channelsToDelete.push(channel.id);
       }
@@ -151,7 +138,7 @@ function registerAntiNuke(client) {
     }
   });
 
-  // --- Modifications de perms de salon (ex: salon privé rendu public à @everyone) ---
+  // --- Modifications de perms de salon ---
   client.on("channelUpdate", async (oldChannel, newChannel) => {
     if (!newChannel.guild) return;
 
@@ -177,8 +164,12 @@ function registerAntiNuke(client) {
 
   // --- Suppression & Création de Rôles ---
   client.on("roleDelete", async (role) => {
+    if (!role.guild) return;
     const executor = await getExecutorWithRetry(role.guild, AuditLogEvent.RoleDelete, role.id);
     if (!executor) return;
+
+    // Protection spécifique du rôle Lotus Quarantaine
+    await handleRoleDeletion(role.guild, role, executor);
 
     await checkAndPunish({
       guild: role.guild,
@@ -190,6 +181,7 @@ function registerAntiNuke(client) {
   });
 
   client.on("roleCreate", async (role) => {
+    if (!role.guild) return;
     const executor = await getExecutorWithRetry(role.guild, AuditLogEvent.RoleCreate, role.id);
     if (!executor) return;
 
@@ -289,7 +281,7 @@ function registerAntiNuke(client) {
     });
   });
 
-  // --- Modification du Serveur (Nom, Vanity, Icône) ---
+  // --- Modification du Serveur ---
   client.on("guildUpdate", async (oldGuild, newGuild) => {
     const executor = await getExecutorWithRetry(newGuild, AuditLogEvent.GuildUpdate, undefined, 3000);
     if (!executor) return;
@@ -305,7 +297,7 @@ function registerAntiNuke(client) {
     }
   });
 
-  // --- Auto-Diagnostic : Détection Perte de Perms Admin sur Lotus ---
+  // --- Auto-Diagnostic : Perte de Perms Admin ---
   client.on("guildMemberUpdate", async (oldMember, newMember) => {
     if (newMember.id !== client.user.id) return;
 
@@ -348,7 +340,7 @@ function registerAntiNuke(client) {
     }
   });
 
-  console.log("[AntiNuke Pro] Module Zero-Trust + Rollback Intégral actif.");
+  console.log("[AntiNuke Pro] Module Zero-Trust + Protection Quarantaine actif.");
 }
 
 module.exports = { registerAntiNuke };
