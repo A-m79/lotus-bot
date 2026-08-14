@@ -1,5 +1,6 @@
 const { SlashCommandBuilder, ChannelType, PermissionFlagsBits, EmbedBuilder } = require("discord.js");
 const GuildConfig = require("../models/GuildConfig");
+const { postVerificationMessage } = require("../modules/verificationGate");
 
 // Import sécurisé du cache
 const configCache = require("../utils/configCache");
@@ -178,7 +179,6 @@ module.exports = {
           ],
         });
 
-        // Message d'information fixe
         const infoEmbed = new EmbedBuilder()
           .setTitle("🔒 Zone de Confinement — Lotus Security")
           .setColor("#2b2d31")
@@ -204,16 +204,92 @@ module.exports = {
         actionsTaken.push(`🔒 **Salon Quarantaine :** Retrouvé et vérifié (<#${quarantineChannel.id}>).`);
       }
 
-      // 6. Activation forcée de tous les modules de protection & Sanction
+      // 6. Détection ou création du Rôle "Non-Vérifié" (gate d'entrée)
+      let unverifiedRole = config.unverifiedRoleId ? guild.roles.cache.get(config.unverifiedRoleId) : null;
+      if (!unverifiedRole) {
+        unverifiedRole = guild.roles.cache.find((r) => r.name === "Lotus Non-Vérifié");
+      }
+
+      if (!unverifiedRole) {
+        unverifiedRole = await guild.roles.create({
+          name: "Lotus Non-Vérifié",
+          color: "#99AAB5",
+          reason: "Création automatique du rôle de vérification par /lotus-setup",
+        });
+        config.unverifiedRoleId = unverifiedRole.id;
+        actionsTaken.push("🕐 **Rôle Non-Vérifié :** `Lotus Non-Vérifié` créé.");
+      } else {
+        config.unverifiedRoleId = unverifiedRole.id;
+        actionsTaken.push(`🕐 **Rôle Non-Vérifié :** Retrouvé (<@&${unverifiedRole.id}>).`);
+      }
+
+      // 7. Détection ou création du Salon de Vérification
+      let verificationChannel = config.verificationChannelId ? guild.channels.cache.get(config.verificationChannelId) : null;
+      if (!verificationChannel) {
+        verificationChannel = guild.channels.cache.find(
+          (c) => c.type === ChannelType.GuildText && c.name === "✅-vérification"
+        );
+      }
+
+      if (!verificationChannel) {
+        verificationChannel = await guild.channels.create({
+          name: "✅-vérification",
+          type: ChannelType.GuildText,
+          topic: "Vérification obligatoire avant d'accéder au reste du serveur",
+          // Placé HORS de la catégorie SÉCURITÉ LOTUS (qui est masquée à @everyone) :
+          // ce salon doit rester visible dès l'arrivée, avant même toute vérification.
+          permissionOverwrites: [
+            { id: guild.id, deny: [PermissionFlagsBits.SendMessages] },
+            {
+              id: unverifiedRole.id,
+              allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory],
+            },
+            {
+              id: guild.client.user.id,
+              allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks, PermissionFlagsBits.ManageMessages],
+            },
+          ],
+        });
+        config.verificationChannelId = verificationChannel.id;
+        actionsTaken.push("✅ **Salon Vérification :** `#✅-vérification` créé (visible même sans avoir encore de rôle).");
+      } else {
+        config.verificationChannelId = verificationChannel.id;
+        actionsTaken.push(`✅ **Salon Vérification :** Retrouvé et vérifié (<#${verificationChannel.id}>).`);
+      }
+
+      // 8. Masquage de tous les AUTRES salons existants pour le rôle Non-Vérifié
+      // (protège rétroactivement tout ce qui existait déjà avant l'activation du gate ;
+      // les NOUVEAUX salons créés après coup sont protégés automatiquement en temps réel
+      // par le listener channelCreate de modules/verificationGate.js)
+      const allChannels = await guild.channels.fetch();
+      let protectedCount = 0;
+      for (const [, ch] of allChannels) {
+        if (!ch || !ch.permissionOverwrites) continue;
+        if (ch.id === verificationChannel.id) continue;
+        if (ch.parentId === category.id) continue; // déjà couvert par le deny @everyone de la catégorie
+
+        await ch.permissionOverwrites
+          .edit(unverifiedRole.id, { ViewChannel: false }, { reason: "Lotus Verification Gate : masquage initial" })
+          .catch(() => null);
+        protectedCount++;
+      }
+      actionsTaken.push(`🙈 **Masquage :** ${protectedCount} salon(s) existant(s) rendus invisibles aux membres non-vérifiés.`);
+
+      // 9. Envoi (ou vérification) du message de vérification avec le bouton
+      await postVerificationMessage(verificationChannel);
+      actionsTaken.push("🔘 **Message de vérification :** Bouton de démarrage du challenge posté et épinglé.");
+
+      // 10. Activation forcée de tous les modules de protection & Sanction
       config.antiNukeEnabled = true;
       config.antiRaidEnabled = true;
       config.antiSpamEnabled = true;
       config.altDetectionEnabled = true;
+      config.verificationEnabled = true;
       config.punishment = "quarantine"; // Bascule la sanction par défaut sur la quarantaine
 
-      actionsTaken.push("🛡️ **Systèmes de Protection :** `Anti-Nuke`, `Anti-Raid`, `Anti-Spam` et `Anti-Double-Compte` **ACTIVÉS** (Mode: Quarantaine).");
+      actionsTaken.push("🛡️ **Systèmes de Protection :** `Anti-Nuke`, `Anti-Raid`, `Anti-Spam`, `Anti-Double-Compte` et `Vérification à l'Entrée` **ACTIVÉS** (Mode: Quarantaine).");
 
-      // 7. Sauvegarde BDD & Nettoyage du Cache
+      // 11. Sauvegarde BDD & Nettoyage du Cache
       await config.save();
       safeInvalidateCache(guild.id);
 

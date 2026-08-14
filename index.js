@@ -14,6 +14,7 @@ const { registerAntiNuke } = require("./modules/antiNuke");
 const { registerAntiRaid } = require("./modules/antiRaid");
 const { registerAntiSpam } = require("./modules/antiSpam");
 const { registerAltDetection } = require("./modules/altDetection");
+const { registerVerificationGate, handleVerificationInteraction } = require("./modules/verificationGate");
 
 const client = new Client({
   intents: [
@@ -43,6 +44,11 @@ client.on("interactionCreate", async (interaction) => {
   // 1. Bouton de rétablissement de rôles (logProtector)
   if (interaction.isButton() && interaction.customId.startsWith("restore_roles_")) {
     return handleRestoreRolesButton(interaction);
+  }
+
+  // 2. Boutons du gate de vérification (démarrage + réponses au challenge)
+  if (interaction.isButton() && interaction.customId.startsWith("lotus_verify")) {
+    return handleVerificationInteraction(interaction);
   }
 
   if (!interaction.isChatInputCommand()) return;
@@ -116,6 +122,7 @@ async function main() {
   registerAntiRaid(client);
   registerAntiSpam(client);
   registerAltDetection(client);
+  registerVerificationGate(client);
 
   await client.login(process.env.DISCORD_TOKEN);
   keepAlive(client);
