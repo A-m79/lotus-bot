@@ -4,8 +4,10 @@ const rateTracker = require("../utils/rateTracker");
 const { getGuildConfig } = require("../utils/configCache");
 const { punish } = require("./punisher");
 
-// Cache mémoire pour la détection de répétition (Duplicate Spam)
+// Caches mémoire
 const duplicateCache = new Map();
+const massMentionCache = new Map(); // Tracker @everyone, @here, Rôles (15s)
+const userPingCache = new Map();    // Tracker pings d'utilisateurs (60s)
 
 /**
  * Détermine le niveau de privilège de l'utilisateur (Member, Admin, Whitelist)
@@ -26,13 +28,13 @@ function getPermissionLevel(message, guildConfig) {
 }
 
 /**
- * Analyse du contenu ajustée selon le niveau de privilège
+ * Analyse du contenu textuel (Pubs, Lignes, Caps)
  */
 function analyzeMessage(message, permLevel) {
   const content = message.content;
   if (!content) return null;
 
-  // 1. Pubs / Liens d'invitation Discord (Bloqué pour les membres standards uniquement)
+  // 1. Pubs / Liens d'invitation Discord (Membres uniquement)
   if (permLevel === "member") {
     const inviteRegex = /(discord\.(gg|io|me|li)|discord\.com\/(invite|app\/invite))/i;
     if (inviteRegex.test(content)) {
@@ -43,17 +45,7 @@ function analyzeMessage(message, permLevel) {
     }
   }
 
-  // 2. Mentions massives
-  const totalMentions = message.mentions.users.size + message.mentions.roles.size;
-  const mentionLimit = permLevel === "whitelist" ? 18 : permLevel === "admin" ? 10 : 5;
-  if (message.mentions.everyone || totalMentions >= mentionLimit) {
-    return {
-      type: "mentionSpam",
-      reason: `Spam de mentions (${totalMentions} mentions)`,
-    };
-  }
-
-  // 3. Retours à la ligne abusifs
+  // 2. Retours à la ligne abusifs
   const lineBreaks = (content.match(/\n/g) || []).length;
   const lineLimit = permLevel === "whitelist" ? 40 : permLevel === "admin" ? 25 : 12;
   if (lineBreaks >= lineLimit) {
@@ -63,7 +55,7 @@ function analyzeMessage(message, permLevel) {
     };
   }
 
-  // 4. CAPS LOCK (Uniquement pour les membres standards)
+  // 3. CAPS LOCK (Membres uniquement)
   if (permLevel === "member" && content.length > 15) {
     const capsCount = (content.match(/[A-ZÀ-Ý]/g) || []).length;
     const ratio = capsCount / content.length;
@@ -71,6 +63,75 @@ function analyzeMessage(message, permLevel) {
       return {
         type: "capsSpam",
         reason: `Abus de majuscules (${Math.round(ratio * 100)}%)`,
+      };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Vérification avancée et temporisée des mentions (Massives vs Individuelles)
+ */
+function checkMentionLimits(message, permLevel) {
+  const userId = message.author.id;
+  const now = Date.now();
+
+  // A. Mentions Massives (@everyone, @here, @Rôle)
+  const hasEveryoneOrHere = message.mentions.everyone;
+  const roleMentionsCount = message.mentions.roles.size;
+  const massMentionsInMsg = (hasEveryoneOrHere ? 1 : 0) + roleMentionsCount;
+
+  if (massMentionsInMsg > 0) {
+    if (permLevel === "member") {
+      return {
+        type: "massMentionSpam",
+        reason: "Mention massive non autorisée (@everyone/@here/Rôle)",
+      };
+    }
+
+    // Admin & Whitelist : Tolérance de 3 mentions massives sur 15 secondes
+    const stats = massMentionCache.get(userId) || { count: 0, first: now };
+    if (now - stats.first > 15000) {
+      stats.count = 0;
+      stats.first = now;
+    }
+
+    stats.count += massMentionsInMsg;
+    massMentionCache.set(userId, stats);
+
+    if (stats.count > 3) {
+      massMentionCache.delete(userId);
+      return {
+        type: "massMentionSpam",
+        reason: `Abus de mentions massives (${stats.count}/3 en 15s)`,
+      };
+    }
+  }
+
+  // B. Mentions d'utilisateurs (@User)
+  const userMentions = message.mentions.users.filter(
+    (u) => !u.bot && u.id !== userId
+  );
+  const userMentionsCount = userMentions.size;
+
+  if (userMentionsCount > 0) {
+    const limit = permLevel === "member" ? 2 : 6; // 2/min pour Membres, 6/min pour Staff/WL
+    const stats = userPingCache.get(userId) || { count: 0, first: now };
+
+    if (now - stats.first > 60000) {
+      stats.count = 0;
+      stats.first = now;
+    }
+
+    stats.count += userMentionsCount;
+    userPingCache.set(userId, stats);
+
+    if (stats.count > limit) {
+      userPingCache.delete(userId);
+      return {
+        type: "userPingSpam",
+        reason: `Spam de mentions d'utilisateurs (${stats.count}/${limit} par minute)`,
       };
     }
   }
@@ -115,9 +176,7 @@ async function purgeAuthorMessages(channel, authorId) {
     if (userMessages.size > 0) {
       await channel.bulkDelete(userMessages).catch(() => null);
     }
-  } catch {
-    // Ignore si messages trop anciens ou manque de permissions
-  }
+  } catch {}
 }
 
 function registerAntiSpam(client) {
@@ -127,10 +186,8 @@ function registerAntiSpam(client) {
     const guildConfig = await getGuildConfig(message.guild.id);
     if (!guildConfig?.antiSpamEnabled) return;
 
-    // Détermination du statut de l'utilisateur
     const permLevel = getPermissionLevel(message, guildConfig);
 
-    // Seuils de flood (en messages / 7 secondes)
     const thresholdMap = {
       member: 5,
       admin: 12,
@@ -143,7 +200,7 @@ function registerAntiSpam(client) {
     let actionType = "antiSpam";
     let reason = "";
 
-    // Vecteur A : Analyse du contenu
+    // Vecteur A : Analyse de contenu (Pubs, Lignes, Caps)
     const analysis = analyzeMessage(message, permLevel);
     if (analysis) {
       triggered = true;
@@ -151,14 +208,24 @@ function registerAntiSpam(client) {
       reason = analysis.reason;
     }
 
-    // Vecteur B : Spam de messages identiques
+    // Vecteur B : Contrôle intelligent des mentions (Massives & Individuelles)
+    if (!triggered) {
+      const mentionAnalysis = checkMentionLimits(message, permLevel);
+      if (mentionAnalysis) {
+        triggered = true;
+        actionType = mentionAnalysis.type;
+        reason = mentionAnalysis.reason;
+      }
+    }
+
+    // Vecteur C : Spam de messages identiques
     if (!triggered && isDuplicateSpam(message.author.id, message.content, permLevel)) {
       triggered = true;
       actionType = "duplicateSpam";
       reason = `Spam de messages identiques (${permLevel.toUpperCase()})`;
     }
 
-    // Vecteur C : Rate Limit / Flood
+    // Vecteur D : Rate Limit / Flood
     const count = rateTracker.hit(
       message.guild.id,
       message.author.id,
@@ -174,10 +241,8 @@ function registerAntiSpam(client) {
 
     // Application du protocole de sanction
     if (triggered) {
-      // 1. Suppression immédiate de tous les messages de la session de spam
       await purgeAuthorMessages(message.channel, message.author.id);
 
-      // 2. Exécution de la sanction via Punisher (Timeout forcé pour TOUT LE MONDE en anti-spam)
       await punish({
         guild: message.guild,
         guildConfig,
@@ -189,20 +254,26 @@ function registerAntiSpam(client) {
           Statut: permLevel.toUpperCase(),
           "Dernier message": message.content.slice(0, 80) || "[Texte]",
         },
-        customSanction: "timeout", // Forçage du Timeout systématique pour l'Anti-Spam
+        customSanction: "timeout",
       });
     }
   });
 
-  // Nettoyage automatique de la mémoire du cache
+  // Nettoyage périodique de la mémoire
   setInterval(() => {
     const now = Date.now();
     for (const [userId, data] of duplicateCache.entries()) {
       if (now - data.lastTime > 15000) duplicateCache.delete(userId);
     }
+    for (const [userId, data] of massMentionCache.entries()) {
+      if (now - data.first > 15000) massMentionCache.delete(userId);
+    }
+    for (const [userId, data] of userPingCache.entries()) {
+      if (now - data.first > 60000) userPingCache.delete(userId);
+    }
   }, 30000);
 
-  console.log("[AntiSpam Pro] Shield multi-niveaux (Timeout systématique) armé.");
+  console.log("[AntiSpam Pro] Shield multi-niveaux (Mentions dynamiques) armé.");
 }
 
 module.exports = { registerAntiSpam };
