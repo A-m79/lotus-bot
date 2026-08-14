@@ -170,12 +170,10 @@ async function punish({
           break;
 
         case "timeout":
-          const timeoutRoles = qRoleId ? [qRoleId] : [];
-          await member.roles.set(timeoutRoles, `[Lotus #${caseId}] Retrait des rôles + Isolement`);
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-          await member.timeout(24 * 60 * 60 * 1000, `[Lotus #${caseId}] ${reason}`);
-          punishmentApplied = "STRIP_ROLES + TIMEOUT (24h)";
-          statusIcon = "☣️";
+          // Timeout natif Discord de 10 minutes (SANS altération des rôles ni quarantaine)
+          await member.timeout(10 * 60 * 1000, `[Lotus #${caseId}] ${reason}`);
+          punishmentApplied = "TIMEOUT (10 minutes)";
+          statusIcon = "⏰";
           success = true;
           break;
 
