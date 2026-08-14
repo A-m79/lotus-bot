@@ -1,4 +1,4 @@
-const { PermissionFlagsBits } = require("discord.js");
+const { PermissionFlagsBits, EmbedBuilder } = require("discord.js");
 const config = require("../config/config");
 const rateTracker = require("../utils/rateTracker");
 const { getGuildConfig } = require("../utils/configCache");
@@ -7,32 +7,45 @@ const { punish } = require("./punisher");
 // Cache mémoire pour la détection de répétition (Duplicate Spam)
 const duplicateCache = new Map();
 
-function isWhitelisted(guild, guildConfig, userId) {
-  if (userId === guild.ownerId) return true;
-  if (userId === guild.client.user.id) return true;
-  if (process.env.OWNER_ID && userId === process.env.OWNER_ID) return true;
-  return guildConfig?.whitelist?.includes(userId) ?? false;
+/**
+ * Détermine le niveau de privilège de l'utilisateur (Member, Admin, Whitelist)
+ */
+function getPermissionLevel(message, guildConfig) {
+  const userId = message.author.id;
+  const guild = message.guild;
+
+  const isWL =
+    userId === guild.ownerId ||
+    userId === guild.client.user.id ||
+    (process.env.OWNER_ID && userId === process.env.OWNER_ID) ||
+    (guildConfig?.whitelist?.includes(userId) ?? false);
+
+  if (isWL) return "whitelist";
+  if (message.member?.permissions.has(PermissionFlagsBits.Administrator)) return "admin";
+  return "member";
 }
 
 /**
- * Analyse multicouche du contenu (Invites, Mentions, Retours à la ligne, CAPS)
+ * Analyse du contenu ajustée selon le niveau de privilège
  */
-function analyzeMessage(message, isAdmin) {
+function analyzeMessage(message, permLevel) {
   const content = message.content;
   if (!content) return null;
 
-  // 1. Pubs / Liens d'invitation Discord
-  const inviteRegex = /(discord\.(gg|io|me|li)|discord\.com\/(invite|app\/invite))/i;
-  if (inviteRegex.test(content)) {
-    return {
-      type: "inviteSpam",
-      reason: "Pub / Lien d'invitation Discord non autorisé sur ce serveur",
-    };
+  // 1. Pubs / Liens d'invitation Discord (Bloqué pour les membres standards uniquement)
+  if (permLevel === "member") {
+    const inviteRegex = /(discord\.(gg|io|me|li)|discord\.com\/(invite|app\/invite))/i;
+    if (inviteRegex.test(content)) {
+      return {
+        type: "inviteSpam",
+        reason: "Pub / Lien d'invitation Discord non autorisé",
+      };
+    }
   }
 
-  // 2. Mentions massives (10 pour admin vs 5 pour membre)
+  // 2. Mentions massives
   const totalMentions = message.mentions.users.size + message.mentions.roles.size;
-  const mentionLimit = isAdmin ? 10 : 5;
+  const mentionLimit = permLevel === "whitelist" ? 18 : permLevel === "admin" ? 10 : 5;
   if (message.mentions.everyone || totalMentions >= mentionLimit) {
     return {
       type: "mentionSpam",
@@ -40,9 +53,9 @@ function analyzeMessage(message, isAdmin) {
     };
   }
 
-  // 3. Retours à la ligne abusifs (25 pour admin vs 12 pour membre)
+  // 3. Retours à la ligne abusifs
   const lineBreaks = (content.match(/\n/g) || []).length;
-  const lineLimit = isAdmin ? 25 : 12;
+  const lineLimit = permLevel === "whitelist" ? 40 : permLevel === "admin" ? 25 : 12;
   if (lineBreaks >= lineLimit) {
     return {
       type: "lineSpam",
@@ -50,8 +63,8 @@ function analyzeMessage(message, isAdmin) {
     };
   }
 
-  // 4. CAPS LOCK abusif (> 15 caractères)
-  if (content.length > 15) {
+  // 4. CAPS LOCK (Uniquement pour les membres standards)
+  if (permLevel === "member" && content.length > 15) {
     const capsCount = (content.match(/[A-ZÀ-Ý]/g) || []).length;
     const ratio = capsCount / content.length;
     if (ratio >= 0.8) {
@@ -66,9 +79,9 @@ function analyzeMessage(message, isAdmin) {
 }
 
 /**
- * Détection des répétitions identiques (Supporte les caractères uniques "s", "f")
+ * Détection des répétitions identiques avec seuil dynamique
  */
-function isDuplicateSpam(userId, content, isAdmin) {
+function isDuplicateSpam(userId, content, permLevel) {
   if (!content) return false;
   const cleanContent = content.trim().toLowerCase();
 
@@ -80,7 +93,7 @@ function isDuplicateSpam(userId, content, isAdmin) {
     userDup.lastTime = now;
     duplicateCache.set(userId, userDup);
 
-    const dupLimit = isAdmin ? 4 : 3;
+    const dupLimit = permLevel === "whitelist" ? 8 : permLevel === "admin" ? 5 : 3;
     if (userDup.count >= dupLimit) {
       duplicateCache.delete(userId);
       return true;
@@ -93,7 +106,7 @@ function isDuplicateSpam(userId, content, isAdmin) {
 }
 
 /**
- * Purge ciblant uniquement les messages récents de l'auteur du spam
+ * Purge rapide des derniers messages du spammeur dans le salon
  */
 async function purgeAuthorMessages(channel, authorId) {
   try {
@@ -103,7 +116,7 @@ async function purgeAuthorMessages(channel, authorId) {
       await channel.bulkDelete(userMessages).catch(() => null);
     }
   } catch {
-    // Ignore si messages > 14 jours ou manque de permissions
+    // Ignore si messages trop anciens ou manque de permissions
   }
 }
 
@@ -113,38 +126,39 @@ function registerAntiSpam(client) {
 
     const guildConfig = await getGuildConfig(message.guild.id);
     if (!guildConfig?.antiSpamEnabled) return;
-    if (isWhitelisted(message.guild, guildConfig, message.author.id)) return;
 
-    const isAdmin = message.member?.permissions.has(PermissionFlagsBits.Administrator);
+    // Détermination du statut de l'utilisateur
+    const permLevel = getPermissionLevel(message, guildConfig);
 
-    // Fenêtre de 7s (seuil ajusté à 4 msgs pour membre, 5 msgs pour admin pour bloquer le spam rapide)
-    const baseThreshold =
-      guildConfig?.thresholds?.antiSpam ??
-      config.DEFAULT_THRESHOLDS?.antiSpam ??
-      4;
-    const threshold = isAdmin ? baseThreshold + 1 : baseThreshold;
+    // Seuils de flood (en messages / 7 secondes)
+    const thresholdMap = {
+      member: 5,
+      admin: 12,
+      whitelist: 22,
+    };
+    const threshold = thresholdMap[permLevel];
     const windowMs = 7000;
 
     let triggered = false;
     let actionType = "antiSpam";
     let reason = "";
 
-    // Vecteur A : Analyse du contenu (Invites, Mentions, Lines, Caps)
-    const analysis = analyzeMessage(message, isAdmin);
+    // Vecteur A : Analyse du contenu
+    const analysis = analyzeMessage(message, permLevel);
     if (analysis) {
       triggered = true;
       actionType = analysis.type;
       reason = analysis.reason;
     }
 
-    // Vecteur B : Spam de messages identiques ("s", "f", "q", etc.)
-    if (!triggered && isDuplicateSpam(message.author.id, message.content, isAdmin)) {
+    // Vecteur B : Spam de messages identiques
+    if (!triggered && isDuplicateSpam(message.author.id, message.content, permLevel)) {
       triggered = true;
       actionType = "duplicateSpam";
-      reason = "Spam de messages identiques en boucle";
+      reason = `Spam de messages identiques (${permLevel.toUpperCase()})`;
     }
 
-    // Vecteur C : Rate Limit / Flood rapide
+    // Vecteur C : Rate Limit / Flood
     const count = rateTracker.hit(
       message.guild.id,
       message.author.id,
@@ -158,23 +172,37 @@ function registerAntiSpam(client) {
       rateTracker.reset(message.guild.id, message.author.id, "antiSpam");
     }
 
-    // Application de la sanction
+    // Application du protocole de sanction
     if (triggered) {
-      // Nettoyage de tous les récents messages du spammeur dans le salon
+      // 1. Suppression immédiate de tous les messages de la session de spam
       await purgeAuthorMessages(message.channel, message.author.id);
 
-      // Timeout (qui déclenchera le combo Retrait Rôles + Timeout dans punisher.js si c'est un Admin)
-      const customSanction = isAdmin ? "timeout" : null;
+      // 2. Envoi d'un message privé à la personne sanctionnée
+      const dmEmbed = new EmbedBuilder()
+        .setTitle("⚠️ Sanction Anti-Spam — Lotus Security")
+        .setColor("#FF3333")
+        .setDescription(
+          `Votre compte a été temporairement réduit au silence sur le serveur **${message.guild.name}**.\n\n` +
+            `• **Raison :** ${reason}\n` +
+            `• **Action :** Exclusion temporaire (Timeout)\n\n` +
+            `*Si vous pensez qu'il s'agit d'une erreur, contactez un administrateur.*`
+        )
+        .setTimestamp();
+
+      await message.author.send({ embeds: [dmEmbed] }).catch(() => null);
+
+      // 3. Exécution de la sanction (Timeout forcé pour les Admins/Whitelist pour interrompre le spam)
+      const customSanction = permLevel !== "member" ? "timeout" : null;
 
       await punish({
         guild: message.guild,
         guildConfig,
         executorId: message.author.id,
         actionType,
-        reason: isAdmin ? `[Admin Intelligentsia] ${reason}` : reason,
+        reason: `[AntiSpam ${permLevel.toUpperCase()}] ${reason}`,
         details: {
           Salon: `#${message.channel.name}`,
-          Statut: isAdmin ? "Administrateur" : "Membre",
+          Statut: permLevel.toUpperCase(),
           "Dernier message": message.content.slice(0, 80) || "[Texte]",
         },
         customSanction,
@@ -182,7 +210,7 @@ function registerAntiSpam(client) {
     }
   });
 
-  // Nettoyage périodique du cache
+  // Nettoyage automatique de la mémoire du cache
   setInterval(() => {
     const now = Date.now();
     for (const [userId, data] of duplicateCache.entries()) {
@@ -190,7 +218,7 @@ function registerAntiSpam(client) {
     }
   }, 30000);
 
-  console.log("[AntiSpam Pro] Module complet multi-vecteurs actif.");
+  console.log("[AntiSpam Pro] Shield multi-niveaux (Membre / Admin / Whitelist) armé.");
 }
 
 module.exports = { registerAntiSpam };
