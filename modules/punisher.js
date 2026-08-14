@@ -169,13 +169,34 @@ async function punish({
           success = true;
           break;
 
-        case "timeout":
-          // Timeout natif Discord de 10 minutes (SANS altération des rôles ni quarantaine)
+        case "timeout": {
+          const hasAdminPerm = member.permissions.has(PermissionFlagsBits.Administrator);
+
+          // Discord interdit le timeout sur un membre ayant la perm Administrateur.
+          // Si c'est un Admin, on filtre et retire uniquement les rôles qui lui donnent la perm Admin.
+          if (hasAdminPerm) {
+            details.previousRoles = member.roles.cache
+              .filter((r) => r.id !== guild.id)
+              .map((r) => r.id);
+
+            const safeRoles = member.roles.cache.filter(
+              (role) => !role.permissions.has(PermissionFlagsBits.Administrator) && role.id !== guild.id
+            );
+
+            await member.roles.set(safeRoles, `[Lotus #${caseId}] Retrait perm Admin pour appliquer le Timeout`);
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+          }
+
+          // Timeout natif Discord de 10 minutes
           await member.timeout(10 * 60 * 1000, `[Lotus #${caseId}] ${reason}`);
-          punishmentApplied = "TIMEOUT (10 minutes)";
+
+          punishmentApplied = hasAdminPerm
+            ? "REMOVED_ADMIN_ROLE + TIMEOUT (10m)"
+            : "TIMEOUT (10 minutes)";
           statusIcon = "⏰";
           success = true;
           break;
+        }
 
         case "quarantine":
           if (qRoleId) {
