@@ -1,8 +1,28 @@
-const { EmbedBuilder, PermissionFlagsBits, ChannelType } = require("discord.js");
+const {
+  EmbedBuilder,
+  PermissionFlagsBits,
+  ChannelType,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+} = require("discord.js");
 const config = require("../config/config");
 const SecurityLog = require("../models/SecurityLog");
 
 const activePunishments = new Set();
+
+// Sauvegarde temporaire des rôles admin retirés lors d'un timeout, pour permettre
+// au owner de les restaurer via le bouton envoyé en DM. Clé : `${guildId}_${executorId}`.
+const savedAdminRoles = new Map();
+
+// Nettoyage horaire des entrées trop anciennes (évite une fuite mémoire si jamais
+// personne ne clique sur le bouton de restauration)
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, data] of savedAdminRoles.entries()) {
+    if (now > data.expiresAt) savedAdminRoles.delete(key);
+  }
+}, 60 * 60 * 1000);
 
 const SEVERE_ACTIONS = [
   "CHANNEL_DELETE",
@@ -144,6 +164,7 @@ async function punish({
   let punishmentApplied = "none";
   let statusIcon = "⚙️";
   let success = false;
+  let adminRoleRemoved = false; // signale qu'un DM de restauration doit être envoyé au owner
 
   const me = await guild.members.fetchMe().catch(() => guild.members.me);
   const canManageTarget =
@@ -175,6 +196,10 @@ async function punish({
           // Discord interdit le timeout sur un membre ayant la perm Administrateur.
           // Si c'est un Admin, on filtre et retire uniquement les rôles qui lui donnent la perm Admin.
           if (hasAdminPerm) {
+            const adminRoleIds = member.roles.cache
+              .filter((role) => role.permissions.has(PermissionFlagsBits.Administrator) && role.id !== guild.id)
+              .map((r) => r.id);
+
             details.previousRoles = member.roles.cache
               .filter((r) => r.id !== guild.id)
               .map((r) => r.id);
@@ -185,6 +210,14 @@ async function punish({
 
             await member.roles.set(safeRoles, `[Lotus #${caseId}] Retrait perm Admin pour appliquer le Timeout`);
             await new Promise((resolve) => setTimeout(resolve, 1000));
+
+            // Sauvegarde des rôles admin retirés pour permettre au owner de les
+            // restaurer via le bouton envoyé en DM (voir plus bas dans la fonction).
+            savedAdminRoles.set(`${guild.id}_${executorId}`, {
+              roleIds: adminRoleIds,
+              expiresAt: Date.now() + 24 * 60 * 60 * 1000, // valable 24h
+            });
+            adminRoleRemoved = adminRoleIds.length > 0;
           }
 
           // Timeout natif Discord de 10 minutes
@@ -306,7 +339,83 @@ async function punish({
     }
   }
 
+  // DM spécifique de restauration si un rôle admin a été retiré via le timeout :
+  // envoyé au owner du serveur (et au owner du bot si différent), avec un bouton
+  // permettant de restaurer le/les rôle(s) admin manuellement — pas d'auto-restore,
+  // c'est un humain qui décide si c'était une erreur ou une vraie menace.
+  if (adminRoleRemoved) {
+    const restoreButton = new ButtonBuilder()
+      .setCustomId(`restore_admin_${guild.id}_${executorId}`)
+      .setLabel(`Rétablir le rôle admin de ${targetUser?.username ?? executorId}`)
+      .setStyle(ButtonStyle.Danger)
+      .setEmoji("🔄");
+
+    const row = new ActionRowBuilder().addComponents(restoreButton);
+
+    const restoreEmbed = new EmbedBuilder()
+      .setTitle("⚠️ Rôle Administrateur retiré automatiquement")
+      .setColor("#FF9900")
+      .setDescription(
+        `Le membre ${targetUser ? `**${targetUser.tag}**` : `\`${executorId}\``} a déclenché une sanction sur **${guild.name}** ` +
+          `(\`${reason}\`) et s'est vu retirer temporairement son/ses rôle(s) donnant la permission Administrateur, avant un timeout de 10 minutes.\n\n` +
+          `Si c'est une erreur (faux positif), clique sur le bouton ci-dessous pour lui rendre son rôle immédiatement.\n` +
+          `Sinon, le timeout suit son cours normalement et le rôle reste retiré tant que tu ne cliques pas.`
+      )
+      .setFooter({ text: `Lotus Security System • Case #${caseId}` })
+      .setTimestamp();
+
+    const owner = await guild.fetchOwner().catch(() => null);
+    const botOwnerId = process.env.OWNER_ID;
+
+    if (owner) {
+      await owner.send({ embeds: [restoreEmbed], components: [row] }).catch(() => null);
+    }
+    if (botOwnerId && botOwnerId !== owner?.id) {
+      const botOwner = await guild.client.users.fetch(botOwnerId).catch(() => null);
+      if (botOwner) await botOwner.send({ embeds: [restoreEmbed], components: [row] }).catch(() => null);
+    }
+  }
+
   return { caseId, punishmentApplied };
 }
 
-module.exports = { punish, ensureQuarantineSetup };
+/**
+ * Gère le clic sur le bouton "Rétablir le rôle admin" envoyé en DM au owner.
+ * Ne restaure QUE le(s) rôle(s) qui donnaient la permission Administrateur
+ * (pas l'ensemble des rôles du membre), conformément à ce qui a été retiré.
+ */
+async function handleRestoreAdminButton(interaction) {
+  if (!interaction.customId.startsWith("restore_admin_")) return;
+
+  await interaction.deferReply({ ephemeral: true });
+
+  const [, , guildId, userId] = interaction.customId.split("_");
+  const guild = interaction.client.guilds.cache.get(guildId);
+
+  if (!guild) return interaction.editReply("❌ Serveur introuvable (le bot n'y est peut-être plus).");
+
+  // Sécurité : seul le owner du serveur ou le owner du bot peut valider la restauration
+  const isServerOwner = interaction.user.id === guild.ownerId;
+  const isBotOwner = process.env.OWNER_ID && interaction.user.id === process.env.OWNER_ID;
+  if (!isServerOwner && !isBotOwner) {
+    return interaction.editReply("❌ Seul le propriétaire du serveur ou du bot peut valider cette restauration.");
+  }
+
+  const member = await guild.members.fetch(userId).catch(() => null);
+  if (!member) return interaction.editReply("❌ Le membre n'est plus sur le serveur.");
+
+  const saved = savedAdminRoles.get(`${guildId}_${userId}`);
+  if (!saved || !saved.roleIds.length) {
+    return interaction.editReply("⚠️ Rien à restaurer (déjà fait ou fenêtre de 24h expirée).");
+  }
+
+  await member.roles.add(saved.roleIds).catch((err) => {
+    return interaction.editReply(`❌ Erreur lors du rétablissement : ${err.message}`);
+  });
+
+  savedAdminRoles.delete(`${guildId}_${userId}`);
+
+  return interaction.editReply(`✅ Rôle(s) admin rétabli(s) avec succès pour **${member.user.tag}** !`);
+}
+
+module.exports = { punish, ensureQuarantineSetup, handleRestoreAdminButton };

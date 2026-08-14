@@ -4,7 +4,7 @@ module.exports = {
 
   // Seuils par défaut avant sanction (surchargeables par serveur via /lotus config)
   DEFAULT_THRESHOLDS: {
-    channelDelete: 3,
+    channelDelete: 6,
     channelCreate: 5,
     channelUpdate: 2,       // ouverture de salon privé à @everyone
     roleDelete: 3,

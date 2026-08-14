@@ -7,6 +7,7 @@ const { connectDatabase } = require("./database/connect");
 const { keepAlive } = require("./keepAlive");
 const { getGuildConfig } = require("./utils/configCache");
 const { handleRestoreRolesButton } = require("./utils/logProtector");
+const { handleRestoreAdminButton } = require("./modules/punisher");
 const { takeBackup } = require("./utils/backupEngine");
 const config = require("./config/config");
 
@@ -41,12 +42,17 @@ for (const file of commandFiles) {
 
 // Interactions : Commandes Slash + Boutons
 client.on("interactionCreate", async (interaction) => {
-  // 1. Bouton de rétablissement de rôles (logProtector)
+  // 1. Bouton de rétablissement de rôles (logProtector : salons/rôles critiques supprimés)
   if (interaction.isButton() && interaction.customId.startsWith("restore_roles_")) {
     return handleRestoreRolesButton(interaction);
   }
 
-  // 2. Boutons du gate de vérification (démarrage + réponses au challenge)
+  // 2. Bouton de rétablissement du rôle admin (punisher : timeout d'un admin)
+  if (interaction.isButton() && interaction.customId.startsWith("restore_admin_")) {
+    return handleRestoreAdminButton(interaction);
+  }
+
+  // 3. Boutons du gate de vérification (démarrage + réponses au challenge)
   if (interaction.isButton() && interaction.customId.startsWith("lotus_verify")) {
     return handleVerificationInteraction(interaction);
   }
