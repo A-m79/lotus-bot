@@ -1,4 +1,4 @@
-const { PermissionFlagsBits, EmbedBuilder } = require("discord.js");
+const { PermissionFlagsBits } = require("discord.js");
 const config = require("../config/config");
 const rateTracker = require("../utils/rateTracker");
 const { getGuildConfig } = require("../utils/configCache");
@@ -177,23 +177,7 @@ function registerAntiSpam(client) {
       // 1. Suppression immédiate de tous les messages de la session de spam
       await purgeAuthorMessages(message.channel, message.author.id);
 
-      // 2. Envoi d'un message privé à la personne sanctionnée
-      const dmEmbed = new EmbedBuilder()
-        .setTitle("⚠️ Sanction Anti-Spam — Lotus Security")
-        .setColor("#FF3333")
-        .setDescription(
-          `Votre compte a été temporairement réduit au silence sur le serveur **${message.guild.name}**.\n\n` +
-            `• **Raison :** ${reason}\n` +
-            `• **Action :** Exclusion temporaire (Timeout)\n\n` +
-            `*Si vous pensez qu'il s'agit d'une erreur, contactez un administrateur.*`
-        )
-        .setTimestamp();
-
-      await message.author.send({ embeds: [dmEmbed] }).catch(() => null);
-
-      // 3. Exécution de la sanction (Timeout forcé pour les Admins/Whitelist pour interrompre le spam)
-      const customSanction = permLevel !== "member" ? "timeout" : null;
-
+      // 2. Exécution de la sanction via Punisher (Timeout forcé pour TOUT LE MONDE en anti-spam)
       await punish({
         guild: message.guild,
         guildConfig,
@@ -205,7 +189,7 @@ function registerAntiSpam(client) {
           Statut: permLevel.toUpperCase(),
           "Dernier message": message.content.slice(0, 80) || "[Texte]",
         },
-        customSanction,
+        customSanction: "timeout", // Forçage du Timeout systématique pour l'Anti-Spam
       });
     }
   });
@@ -218,7 +202,7 @@ function registerAntiSpam(client) {
     }
   }, 30000);
 
-  console.log("[AntiSpam Pro] Shield multi-niveaux (Membre / Admin / Whitelist) armé.");
+  console.log("[AntiSpam Pro] Shield multi-niveaux (Timeout systématique) armé.");
 }
 
 module.exports = { registerAntiSpam };
