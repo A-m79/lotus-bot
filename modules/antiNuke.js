@@ -66,6 +66,8 @@ async function checkAndPunish({ guild, executorId, actionType, reasonLabel, deta
   const baseThreshold = getThreshold(guildConfig, actionType);
   const isWL = isWhitelisted(guildConfig, executorId);
 
+  // La whitelist donne de la marge (+3 actions tolérées) mais n'accorde plus
+  // une immunité totale : un compte compromis whitelisté doit rester sanctionnable.
   const threshold = isWL ? baseThreshold + 3 : baseThreshold;
 
   const count = rateTracker.hit(guild.id, executorId, actionType, config.ANTINUKE_WINDOW_MS || 10000);
@@ -93,8 +95,19 @@ function registerAntiNuke(client) {
     const executor = await getExecutorWithRetry(channel.guild, AuditLogEvent.ChannelDelete, channel.id);
     if (!executor) return;
 
-    // Protection du salon de logs/alertes/quarantaine
-    await handleLogChannelDeletion(channel.guild, channel, executor);
+    // Protection du salon de logs/alertes/quarantaine/catégorie Lotus.
+    // Si logProtector a déjà pris en charge l'incident (sanction + recréation +
+    // alerte), on ne relance PAS checkAndPunish dessus pour éviter un double
+    // strip de rôles et une double alerte pour le même événement. On garde
+    // quand même le compteur du rate-tracker actif pour le suivi de récidive :
+    // si l'auteur enchaîne d'autres suppressions juste après, le seuil global
+    // continuera de compter normalement et pourra déclencher checkAndPunish
+    // sur une suppression suivante non-protégée.
+    const handledByLogProtector = await handleLogChannelDeletion(channel.guild, channel, executor);
+    if (handledByLogProtector) {
+      rateTracker.hit(channel.guild.id, executor.id, "channelDelete", config.ANTINUKE_WINDOW_MS || 10000);
+      return;
+    }
 
     await checkAndPunish({
       guild: channel.guild,
@@ -124,7 +137,7 @@ function registerAntiNuke(client) {
 
     if (punished) {
       const channelsToDelete = getAndClearCreatedChannels(channel.guild.id, executor.id);
-      
+
       if (!channelsToDelete.includes(channel.id)) {
         channelsToDelete.push(channel.id);
       }
@@ -168,8 +181,14 @@ function registerAntiNuke(client) {
     const executor = await getExecutorWithRetry(role.guild, AuditLogEvent.RoleDelete, role.id);
     if (!executor) return;
 
-    // Protection spécifique du rôle Lotus Quarantaine
-    await handleRoleDeletion(role.guild, role, executor);
+    // Même logique anti-doublon que pour channelDelete ci-dessus : si logProtector
+    // a déjà géré la suppression du rôle Lotus Quarantaine, on ne relance pas
+    // checkAndPunish dessus (mais on garde le compteur actif pour la récidive).
+    const handledByLogProtector = await handleRoleDeletion(role.guild, role, executor);
+    if (handledByLogProtector) {
+      rateTracker.hit(role.guild.id, executor.id, "roleDelete", config.ANTINUKE_WINDOW_MS || 10000);
+      return;
+    }
 
     await checkAndPunish({
       guild: role.guild,

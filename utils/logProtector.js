@@ -6,41 +6,56 @@ const { ensureQuarantineSetup } = require("../modules/punisher");
 const recreatingGuilds = new Set();
 const savedMemberRoles = new Map();
 
+/**
+ * Gère la suppression d'un salon/catégorie protégé (logs, alertes, quarantaine,
+ * catégorie Lotus). Retourne `true` si l'incident concernait bien un élément
+ * protégé (que ce soit géré activement, ignoré car owner, ou déjà en cours de
+ * traitement) — dans ce cas, antiNuke.js NE DOIT PAS lancer sa propre sanction
+ * générique en plus, pour éviter un double strip de rôles / double alerte.
+ * Retourne `false` si le salon supprimé n'était pas protégé du tout : antiNuke.js
+ * doit alors traiter l'événement normalement via son pipeline générique.
+ */
 async function handleLogChannelDeletion(guild, deletedChannel, executor) {
-  // 🛡️ IMMUNITÉ OWNER
+  const config = await GuildConfig.findOne({ guildId: guild.id });
+  if (!config) return false;
+
+  const isLogChannel = config.logChannelId === deletedChannel.id;
+  const isAlertChannel = config.alertChannelId === deletedChannel.id;
+  const isQuarantineChannel = deletedChannel.name === "🔒-quarantaine";
+  const isCategory = deletedChannel.type === ChannelType.GuildCategory;
+
+  const logChan = config.logChannelId ? guild.channels.cache.get(config.logChannelId) : null;
+  const alertChan = config.alertChannelId ? guild.channels.cache.get(config.alertChannelId) : null;
+
+  const isLotusCategory =
+    isCategory &&
+    (deletedChannel.name.toLowerCase().includes("lotus") ||
+      deletedChannel.name.toLowerCase().includes("sécurité") ||
+      (logChan && logChan.parentId === deletedChannel.id) ||
+      (alertChan && alertChan.parentId === deletedChannel.id));
+
+  const isProtected = isLogChannel || isAlertChannel || isQuarantineChannel || isLotusCategory;
+
+  // Pas un élément protégé : on laisse antiNuke.js gérer normalement (compteur/seuil habituel).
+  if (!isProtected) return false;
+
+  // 🛡️ IMMUNITÉ OWNER : action volontaire, on ne fait rien, mais on signale
+  // "géré" pour empêcher antiNuke.js de déclencher sa propre logique dessus
+  // (qui de toute façon ignorerait aussi le owner, donc ce return true est
+  // surtout là pour la cohérence du flux).
   const botOwnerId = process.env.OWNER_ID;
   const isOwner = executor.id === guild.ownerId || (botOwnerId && executor.id === botOwnerId);
-
   if (isOwner) {
     console.log(`[LOG-PROTECTOR] Action ignorée : exécutée par le Owner (${executor.tag}).`);
-    return;
+    return true;
   }
 
-  // 🛑 Verrou anti-doublon
-  if (recreatingGuilds.has(guild.id)) return;
+  // 🛑 Verrou anti-doublon : une recréation est déjà en cours pour ce serveur
+  // (ex: suppression en rafale de plusieurs éléments protégés à la fois).
+  if (recreatingGuilds.has(guild.id)) return true;
   recreatingGuilds.add(guild.id);
 
   try {
-    const config = await GuildConfig.findOne({ guildId: guild.id });
-    if (!config) return;
-
-    const isLogChannel = config.logChannelId === deletedChannel.id;
-    const isAlertChannel = config.alertChannelId === deletedChannel.id;
-    const isQuarantineChannel = deletedChannel.name === "🔒-quarantaine";
-    const isCategory = deletedChannel.type === ChannelType.GuildCategory;
-
-    const logChan = config.logChannelId ? guild.channels.cache.get(config.logChannelId) : null;
-    const alertChan = config.alertChannelId ? guild.channels.cache.get(config.alertChannelId) : null;
-
-    const isLotusCategory =
-      isCategory &&
-      (deletedChannel.name.toLowerCase().includes("lotus") ||
-        deletedChannel.name.toLowerCase().includes("sécurité") ||
-        (logChan && logChan.parentId === deletedChannel.id) ||
-        (alertChan && alertChan.parentId === deletedChannel.id));
-
-    if (!isLogChannel && !isAlertChannel && !isQuarantineChannel && !isLotusCategory) return;
-
     console.log(`[LOG-PROTECTOR] Suppression de ${deletedChannel.name} par ${executor.tag} sur ${guild.name}`);
 
     // Sanction de l'auteur non-owner
@@ -95,10 +110,8 @@ async function handleLogChannelDeletion(guild, deletedChannel, executor) {
         `• **Sanction :** Retrait de ses rôles.\n` +
         `• **Action :** Catégorie auto-recréée ${newCategory ? `<#${newCategory.id}>` : "*(Échec)*"}.`;
     } else if (isQuarantineChannel) {
-      // Recréation de la base quarantaine
       const { quarantineChannel } = await ensureQuarantineSetup(guild);
-      
-      // Forçage explicite du placement direct dans la catégorie SÉCURITÉ LOTUS avec un petit délai de sécurité
+
       if (quarantineChannel && parentCategory) {
         await new Promise((r) => setTimeout(r, 500));
         await quarantineChannel.setParent(parentCategory.id, { lockPermissions: false }).catch(() => null);
@@ -167,53 +180,61 @@ async function handleLogChannelDeletion(guild, deletedChannel, executor) {
   } finally {
     setTimeout(() => recreatingGuilds.delete(guild.id), 5000);
   }
+
+  return true;
 }
 
+/**
+ * Gère la suppression du rôle "Lotus Quarantaine" spécifiquement.
+ * Même contrat de retour booléen que handleLogChannelDeletion.
+ */
 async function handleRoleDeletion(guild, deletedRole, executor) {
+  if (deletedRole.name !== "Lotus Quarantaine") return false;
+
   const botOwnerId = process.env.OWNER_ID;
   const isOwner = executor.id === guild.ownerId || (botOwnerId && executor.id === botOwnerId);
-  if (isOwner) return;
+  if (isOwner) return true;
 
-  if (deletedRole.name === "Lotus Quarantaine") {
-    console.log(`[LOG-PROTECTOR] Suppression du rôle de quarantaine par ${executor.tag} sur ${guild.name}`);
+  console.log(`[LOG-PROTECTOR] Suppression du rôle de quarantaine par ${executor.tag} sur ${guild.name}`);
 
-    const member = await guild.members.fetch(executor.id).catch(() => null);
-    if (member && member.manageable) {
-      const rolesToSave = member.roles.cache.filter((r) => r.id !== guild.id).map((r) => r.id);
-      savedMemberRoles.set(`${guild.id}_${executor.id}`, rolesToSave);
-      await member.roles.set([], `[Lotus LogProtector] Suppression non autorisée du rôle de quarantaine`).catch(() => null);
-    }
-
-    await ensureQuarantineSetup(guild);
-
-    const restoreButton = new ButtonBuilder()
-      .setCustomId(`restore_roles_${guild.id}_${executor.id}`)
-      .setLabel(`Rétablir les rôles de ${executor.username}`)
-      .setStyle(ButtonStyle.Danger)
-      .setEmoji("🔄");
-
-    const row = new ActionRowBuilder().addComponents(restoreButton);
-
-    const embed = new EmbedBuilder()
-      .setTitle("🚨 ALERTE CRITIQUE : Rôle de Quarantaine Supprimé !")
-      .setColor("#FF0000")
-      .setDescription(
-        `Le rôle de sécurité **Lotus Quarantaine** a été supprimé.\n\n` +
-        `• **Auteur :** ${executor.tag} (\`${executor.id}\`)\n` +
-        `• **Sanction :** Retrait de ses rôles.\n` +
-        `• **Action :** Rôle auto-recréé avec succès.`
-      )
-      .setFooter({ text: "Lotus Security System • Protection Ultime" })
-      .setTimestamp();
-
-    const owner = await guild.fetchOwner().catch(() => null);
-    if (owner) await owner.send({ embeds: [embed], components: [row] }).catch(() => null);
-
-    if (botOwnerId && botOwnerId !== owner?.id) {
-      const botOwner = await guild.client.users.fetch(botOwnerId).catch(() => null);
-      if (botOwner) await botOwner.send({ embeds: [embed], components: [row] }).catch(() => null);
-    }
+  const member = await guild.members.fetch(executor.id).catch(() => null);
+  if (member && member.manageable) {
+    const rolesToSave = member.roles.cache.filter((r) => r.id !== guild.id).map((r) => r.id);
+    savedMemberRoles.set(`${guild.id}_${executor.id}`, rolesToSave);
+    await member.roles.set([], `[Lotus LogProtector] Suppression non autorisée du rôle de quarantaine`).catch(() => null);
   }
+
+  await ensureQuarantineSetup(guild);
+
+  const restoreButton = new ButtonBuilder()
+    .setCustomId(`restore_roles_${guild.id}_${executor.id}`)
+    .setLabel(`Rétablir les rôles de ${executor.username}`)
+    .setStyle(ButtonStyle.Danger)
+    .setEmoji("🔄");
+
+  const row = new ActionRowBuilder().addComponents(restoreButton);
+
+  const embed = new EmbedBuilder()
+    .setTitle("🚨 ALERTE CRITIQUE : Rôle de Quarantaine Supprimé !")
+    .setColor("#FF0000")
+    .setDescription(
+      `Le rôle de sécurité **Lotus Quarantaine** a été supprimé.\n\n` +
+      `• **Auteur :** ${executor.tag} (\`${executor.id}\`)\n` +
+      `• **Sanction :** Retrait de ses rôles.\n` +
+      `• **Action :** Rôle auto-recréé avec succès.`
+    )
+    .setFooter({ text: "Lotus Security System • Protection Ultime" })
+    .setTimestamp();
+
+  const owner = await guild.fetchOwner().catch(() => null);
+  if (owner) await owner.send({ embeds: [embed], components: [row] }).catch(() => null);
+
+  if (botOwnerId && botOwnerId !== owner?.id) {
+    const botOwner = await guild.client.users.fetch(botOwnerId).catch(() => null);
+    if (botOwner) await botOwner.send({ embeds: [embed], components: [row] }).catch(() => null);
+  }
+
+  return true;
 }
 
 async function handleRestoreRolesButton(interaction) {
