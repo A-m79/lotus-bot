@@ -17,6 +17,7 @@ const { registerAntiSpam } = require("./modules/antiSpam");
 const { registerAltDetection } = require("./modules/altDetection");
 const { registerVerificationGate, handleVerificationInteraction } = require("./modules/verificationGate");
 const { registerInviteTracker } = require("./modules/inviteTracker");
+const { registerPhishingDetection } = require("./modules/phishingDetection");
 
 const client = new Client({
   intents: [
@@ -93,7 +94,6 @@ client.on("interactionCreate", async (interaction) => {
 
 // Tâches Périodiques (Backup 24h & Diagnostic)
 function setupCronTasks() {
-  // Backup auto toutes les 24h
   setInterval(async () => {
     console.log("[AUTO-BACKUP] Lancement de la sauvegarde automatique globale...");
     for (const guild of client.guilds.cache.values()) {
@@ -101,7 +101,6 @@ function setupCronTasks() {
     }
   }, config.AUTO_BACKUP_INTERVAL_MS);
 
-  // Auto-diagnostic des perms de Lotus toutes les 15 minutes
   setInterval(async () => {
     for (const guild of client.guilds.cache.values()) {
       const me = guild.members.me || (await guild.members.fetchMe().catch(() => null));
@@ -132,6 +131,7 @@ async function main() {
   registerAltDetection(client);
   registerVerificationGate(client);
   registerInviteTracker(client);
+  registerPhishingDetection(client);
 
   await client.login(process.env.DISCORD_TOKEN);
   keepAlive(client);

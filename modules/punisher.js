@@ -15,8 +15,6 @@ const activePunishments = new Set();
 // au owner de les restaurer via le bouton envoyé en DM. Clé : `${guildId}_${executorId}`.
 const savedAdminRoles = new Map();
 
-// Nettoyage horaire des entrées trop anciennes (évite une fuite mémoire si jamais
-// personne ne clique sur le bouton de restauration)
 setInterval(() => {
   const now = Date.now();
   for (const [key, data] of savedAdminRoles.entries()) {
@@ -32,6 +30,7 @@ const SEVERE_ACTIONS = [
   "ROLE_CREATE",
   "MEMBER_BAN",
   "MEMBER_KICK",
+  "MEMBER_PRUNE",
   "WEBHOOK_CREATE",
   "BOT_ADD",
   "DANGEROUS_ROLE_UPDATE",
@@ -42,6 +41,8 @@ const SEVERE_ACTIONS = [
   "EMOJI_DELETE",
   "STICKER_DELETE",
   "GUILD_UPDATE",
+  "OWNERSHIP_TRANSFER",
+  "PHISHING_LINK",
 ];
 
 function normalizeActionType(str) {
@@ -147,7 +148,6 @@ async function punish({
   const caseId = generateCaseId();
   const punishment = customSanction || guildConfig?.punishment || config.DEFAULT_PUNISHMENT;
 
-  // Garantir l'existence de la quarantaine si nécessaire
   const { quarantineRole } = await ensureQuarantineSetup(guild);
   const qRoleId = guildConfig?.quarantineRoleId || quarantineRole?.id;
 
@@ -164,7 +164,7 @@ async function punish({
   let punishmentApplied = "none";
   let statusIcon = "⚙️";
   let success = false;
-  let adminRoleRemoved = false; // signale qu'un DM de restauration doit être envoyé au owner
+  let adminRoleRemoved = false;
 
   const me = await guild.members.fetchMe().catch(() => guild.members.me);
   const canManageTarget =
@@ -193,8 +193,6 @@ async function punish({
         case "timeout": {
           const hasAdminPerm = member.permissions.has(PermissionFlagsBits.Administrator);
 
-          // Discord interdit le timeout sur un membre ayant la perm Administrateur.
-          // Si c'est un Admin, on filtre et retire uniquement les rôles qui lui donnent la perm Admin.
           if (hasAdminPerm) {
             const adminRoleIds = member.roles.cache
               .filter((role) => role.permissions.has(PermissionFlagsBits.Administrator) && role.id !== guild.id)
@@ -211,16 +209,13 @@ async function punish({
             await member.roles.set(safeRoles, `[Lotus #${caseId}] Retrait perm Admin pour appliquer le Timeout`);
             await new Promise((resolve) => setTimeout(resolve, 1000));
 
-            // Sauvegarde des rôles admin retirés pour permettre au owner de les
-            // restaurer via le bouton envoyé en DM (voir plus bas dans la fonction).
             savedAdminRoles.set(`${guild.id}_${executorId}`, {
               roleIds: adminRoleIds,
-              expiresAt: Date.now() + 24 * 60 * 60 * 1000, // valable 24h
+              expiresAt: Date.now() + 24 * 60 * 60 * 1000,
             });
             adminRoleRemoved = adminRoleIds.length > 0;
           }
 
-          // Timeout natif Discord de 10 minutes
           await member.timeout(10 * 60 * 1000, `[Lotus #${caseId}] ${reason}`);
 
           punishmentApplied = hasAdminPerm
@@ -275,7 +270,6 @@ async function punish({
     statusIcon = "⚠️";
   }
 
-  // Notification MP au suspect
   if (targetUser && !targetUser.bot && success) {
     const dmEmbed = new EmbedBuilder()
       .setColor("#FF2A2A")
@@ -292,7 +286,6 @@ async function punish({
     await targetUser.send({ embeds: [dmEmbed] }).catch(() => null);
   }
 
-  // Historisation MongoDB
   await SecurityLog.create({
     caseId,
     guildId: guild.id,
@@ -304,7 +297,6 @@ async function punish({
     timestamp: new Date(),
   }).catch((err) => console.error("[SecurityLog DB Error]:", err));
 
-  // Construction de l'Embed de Log
   const embed = new EmbedBuilder()
     .setColor(success ? "#FF2A2A" : "#FFCC00")
     .setAuthor({ name: "LOTUS SECURITY SYSTEM", iconURL: guild.iconURL({ dynamic: true }) || undefined })
@@ -318,7 +310,6 @@ async function punish({
     .setFooter({ text: `Lotus Security System • Case #${caseId}` })
     .setTimestamp();
 
-  // Logs salon principal (#logs-lotus / #alertes-lotus)
   const targetChannelId = guildConfig?.logChannelId || guildConfig?.alertChannelId;
   let logSent = false;
 
@@ -331,7 +322,6 @@ async function punish({
     }
   }
 
-  // Fallback DM Propriétaire
   if (!logSent || isSevereAction(actionType)) {
     const owner = await guild.fetchOwner().catch(() => null);
     if (owner) {
@@ -339,10 +329,6 @@ async function punish({
     }
   }
 
-  // DM spécifique de restauration si un rôle admin a été retiré via le timeout :
-  // envoyé au owner du serveur (et au owner du bot si différent), avec un bouton
-  // permettant de restaurer le/les rôle(s) admin manuellement — pas d'auto-restore,
-  // c'est un humain qui décide si c'était une erreur ou une vraie menace.
   if (adminRoleRemoved) {
     const restoreButton = new ButtonBuilder()
       .setCustomId(`restore_admin_${guild.id}_${executorId}`)
@@ -379,11 +365,6 @@ async function punish({
   return { caseId, punishmentApplied };
 }
 
-/**
- * Gère le clic sur le bouton "Rétablir le rôle admin" envoyé en DM au owner.
- * Ne restaure QUE le(s) rôle(s) qui donnaient la permission Administrateur
- * (pas l'ensemble des rôles du membre), conformément à ce qui a été retiré.
- */
 async function handleRestoreAdminButton(interaction) {
   if (!interaction.customId.startsWith("restore_admin_")) return;
 
@@ -394,7 +375,6 @@ async function handleRestoreAdminButton(interaction) {
 
   if (!guild) return interaction.editReply("❌ Serveur introuvable (le bot n'y est peut-être plus).");
 
-  // Sécurité : seul le owner du serveur ou le owner du bot peut valider la restauration
   const isServerOwner = interaction.user.id === guild.ownerId;
   const isBotOwner = process.env.OWNER_ID && interaction.user.id === process.env.OWNER_ID;
   if (!isServerOwner && !isBotOwner) {
