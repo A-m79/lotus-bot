@@ -29,6 +29,7 @@ const GuildConfigSchema = new Schema(
       roleCreate: Number,
       memberBan: Number,
       memberKick: Number,
+      memberPrune: Number,
       webhookCreate: Number,
       botAdd: Number,
       dangerousRoleUpdate: Number,
@@ -45,6 +46,13 @@ const GuildConfigSchema = new Schema(
     },
 
     quarantineRoleId: { type: String, default: null },
+    // Bug corrigé : ce champ était déjà écrit par lotus-setup.js mais absent du
+    // schéma, donc silencieusement ignoré par Mongoose (strict mode par défaut) à
+    // chaque .save(). La recherche du salon quarantaine retombait systématiquement
+    // sur le fallback par nom, ce qui fonctionnait mais sans jamais bénéficier du
+    // cache rapide par ID.
+    quarantineChannelId: { type: String, default: null },
+
     lockdownActive: { type: Boolean, default: false },
     whitelist: { type: [String], default: [] },
   },

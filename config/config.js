@@ -2,7 +2,7 @@ module.exports = {
   // Fenêtre de temps (ms) pendant laquelle on compte les actions d'un user pour l'anti-nuke
   ANTINUKE_WINDOW_MS: 10_000,
 
-  // Seuils par défaut avant sanction (surchargeables par serveur via /lotus config)
+  // Seuils par défaut avant sanction (surchargeables par serveur via /lotus-thresholds)
   DEFAULT_THRESHOLDS: {
     channelDelete: 6,
     channelCreate: 5,
@@ -11,6 +11,7 @@ module.exports = {
     roleCreate: 3,
     memberBan: 5,
     memberKick: 5,
+    memberPrune: 2,          // purge de masse des membres inactifs
     webhookCreate: 3,
     botAdd: 1,
     dangerousRoleUpdate: 2,

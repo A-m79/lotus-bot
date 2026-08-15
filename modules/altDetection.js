@@ -1,5 +1,6 @@
 const { punish } = require("./punisher");
 const { getGuildConfig } = require("../utils/configCache");
+const { getInviteInfo } = require("./inviteTracker");
 const { EmbedBuilder } = require("discord.js");
 
 const SUSPICIOUS_PATTERNS = [
@@ -50,6 +51,12 @@ function registerAltDetection(client) {
 
     // 1. CAS GRAVE : Compte < 14 jours -> Quarantaine directe
     if (isUltraRecent) {
+      // Petit délai pour laisser inviteTracker.js le temps de résoudre l'invitation
+      // utilisée (il écoute le même event guildMemberAdd, l'ordre d'exécution
+      // entre modules n'est pas garanti sans ce court délai).
+      await new Promise((r) => setTimeout(r, 500));
+      const inviteInfo = getInviteInfo(guild.id, user.id);
+
       return punish({
         guild,
         guildConfig,
@@ -60,6 +67,7 @@ function registerAltDetection(client) {
           "Création": `${accountAgeDays}j (${accountAgeHours}h)`,
           "Avatar": user.avatar ? "Personnalisé" : "Par défaut",
           "Indicateurs": flags.join(" | "),
+          ...(inviteInfo ? { "Arrivé via": `${inviteInfo.type === "vanity" ? "URL vanity" : "Invitation"} \`${inviteInfo.code}\`` } : {}),
         },
         customSanction: "quarantine",
       });
@@ -72,6 +80,9 @@ function registerAltDetection(client) {
 
       const channel = await guild.channels.fetch(targetChannelId).catch(() => null);
       if (!channel?.isTextBased()) return;
+
+      await new Promise((r) => setTimeout(r, 500));
+      const inviteInfo = getInviteInfo(guild.id, user.id);
 
       const embed = new EmbedBuilder()
         .setColor("#FFCC00")
@@ -90,11 +101,19 @@ function registerAltDetection(client) {
         .setFooter({ text: "Lotus Security • Module de Suspicion" })
         .setTimestamp();
 
+      if (inviteInfo) {
+        embed.addFields({
+          name: "🔗 Arrivé via",
+          value: `${inviteInfo.type === "vanity" ? "URL vanity" : "Invitation"} \`${inviteInfo.code}\``,
+          inline: true,
+        });
+      }
+
       await channel.send({ embeds: [embed] }).catch(() => null);
     }
   });
 
-  console.log("[Alt Detection Pro] Module de détection et d'avertissement actif.");
+  console.log("[Alt Detection Pro] Module de détection et d'avertissement actif (+ tracking invitations).");
 }
 
 module.exports = { registerAltDetection };

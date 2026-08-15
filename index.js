@@ -16,6 +16,7 @@ const { registerAntiRaid } = require("./modules/antiRaid");
 const { registerAntiSpam } = require("./modules/antiSpam");
 const { registerAltDetection } = require("./modules/altDetection");
 const { registerVerificationGate, handleVerificationInteraction } = require("./modules/verificationGate");
+const { registerInviteTracker } = require("./modules/inviteTracker");
 
 const client = new Client({
   intents: [
@@ -26,6 +27,7 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildWebhooks,
     GatewayIntentBits.GuildEmojisAndStickers,
+    GatewayIntentBits.GuildInvites,
   ],
   partials: [Partials.GuildMember, Partials.User],
 });
@@ -129,6 +131,7 @@ async function main() {
   registerAntiSpam(client);
   registerAltDetection(client);
   registerVerificationGate(client);
+  registerInviteTracker(client);
 
   await client.login(process.env.DISCORD_TOKEN);
   keepAlive(client);

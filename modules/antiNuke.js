@@ -5,6 +5,7 @@ const { getExecutor } = require("../utils/getExecutor");
 const { getGuildConfig } = require("../utils/configCache");
 const { punish } = require("./punisher");
 const { handleLogChannelDeletion, handleRoleDeletion } = require("../utils/logProtector");
+const SecurityLog = require("../models/SecurityLog");
 
 // Suivi temporaire des salons créés par utilisateur pour le Rollback complet
 const createdChannelsTracker = new Map();
@@ -95,14 +96,6 @@ function registerAntiNuke(client) {
     const executor = await getExecutorWithRetry(channel.guild, AuditLogEvent.ChannelDelete, channel.id);
     if (!executor) return;
 
-    // Protection du salon de logs/alertes/quarantaine/catégorie Lotus.
-    // Si logProtector a déjà pris en charge l'incident (sanction + recréation +
-    // alerte), on ne relance PAS checkAndPunish dessus pour éviter un double
-    // strip de rôles et une double alerte pour le même événement. On garde
-    // quand même le compteur du rate-tracker actif pour le suivi de récidive :
-    // si l'auteur enchaîne d'autres suppressions juste après, le seuil global
-    // continuera de compter normalement et pourra déclencher checkAndPunish
-    // sur une suppression suivante non-protégée.
     const handledByLogProtector = await handleLogChannelDeletion(channel.guild, channel, executor);
     if (handledByLogProtector) {
       rateTracker.hit(channel.guild.id, executor.id, "channelDelete", config.ANTINUKE_WINDOW_MS || 10000);
@@ -181,9 +174,6 @@ function registerAntiNuke(client) {
     const executor = await getExecutorWithRetry(role.guild, AuditLogEvent.RoleDelete, role.id);
     if (!executor) return;
 
-    // Même logique anti-doublon que pour channelDelete ci-dessus : si logProtector
-    // a déjà géré la suppression du rôle Lotus Quarantaine, on ne relance pas
-    // checkAndPunish dessus (mais on garde le compteur actif pour la récidive).
     const handledByLogProtector = await handleRoleDeletion(role.guild, role, executor);
     if (handledByLogProtector) {
       rateTracker.hit(role.guild.id, executor.id, "roleDelete", config.ANTINUKE_WINDOW_MS || 10000);
@@ -241,6 +231,27 @@ function registerAntiNuke(client) {
       actionType: "memberKick",
       reasonLabel: "Kicks en masse",
       details: { targetId: member.id },
+    });
+  });
+
+  // --- Purge de masse (Prune) ---
+  // Distincte des kicks individuels : Discord génère UNE SEULE entrée d'audit log
+  // de type MemberPrune pour une purge, avec le nombre de membres retirés d'un
+  // coup (entry.extra.removed). L'ancien pipeline basé sur guildMemberRemove +
+  // AuditLogEvent.MemberKick ne détectait JAMAIS ce cas (type d'audit différent),
+  // donc une purge de masse passait totalement inaperçue jusqu'ici.
+  client.on("guildAuditLogEntryCreate", async (entry, guild) => {
+    if (entry.action !== AuditLogEvent.MemberPrune) return;
+    if (!entry.executorId) return;
+
+    const removedCount = entry.extra?.removed ?? 0;
+
+    await checkAndPunish({
+      guild,
+      executorId: entry.executorId,
+      actionType: "memberPrune",
+      reasonLabel: `Purge de masse des membres inactifs (${removedCount} retirés en une fois)`,
+      details: { removedCount, périodeJours: entry.extra?.days ?? "?" },
     });
   });
 
@@ -302,6 +313,59 @@ function registerAntiNuke(client) {
 
   // --- Modification du Serveur ---
   client.on("guildUpdate", async (oldGuild, newGuild) => {
+    // 🚨 Transfert de propriété : cas critique traité à part, sans seuil ni
+    // pipeline de sanction habituel. On ne peut pas "punir" le nouveau
+    // propriétaire (il a désormais un contrôle total, indépendant des rôles),
+    // donc on se contente d'une alerte maximale immédiate vers tous les
+    // canaux disponibles (ancien owner, owner du bot, salon d'alertes).
+    if (oldGuild.ownerId !== newGuild.ownerId) {
+      const botOwnerId = process.env.OWNER_ID;
+      const previousOwner = await newGuild.client.users.fetch(oldGuild.ownerId).catch(() => null);
+      const newOwner = await newGuild.client.users.fetch(newGuild.ownerId).catch(() => null);
+
+      const embed = new EmbedBuilder()
+        .setTitle("🚨🚨 TRANSFERT DE PROPRIÉTÉ DU SERVEUR DÉTECTÉ 🚨🚨")
+        .setColor("#FF0000")
+        .setDescription(
+          `La propriété de **${newGuild.name}** vient de changer de main.\n\n` +
+            `• **Ancien propriétaire :** ${previousOwner ? `${previousOwner.tag} (\`${previousOwner.id}\`)` : `\`${oldGuild.ownerId}\``}\n` +
+            `• **Nouveau propriétaire :** ${newOwner ? `${newOwner.tag} (\`${newOwner.id}\`)` : `\`${newGuild.ownerId}\``}\n` +
+            `• **Date & Heure :** <t:${Math.floor(Date.now() / 1000)}:F>\n\n` +
+            `⚠️ Si ce transfert n'était pas volontaire, le compte de l'ancien ou du nouveau propriétaire est probablement compromis. ` +
+            `Le nouveau propriétaire dispose désormais d'un contrôle total sur le serveur, y compris sur la configuration de Lotus.`
+        )
+        .setTimestamp();
+
+      if (previousOwner) await previousOwner.send({ embeds: [embed] }).catch(() => null);
+      if (botOwnerId) {
+        const botOwner = await newGuild.client.users.fetch(botOwnerId).catch(() => null);
+        if (botOwner && botOwner.id !== previousOwner?.id) {
+          await botOwner.send({ embeds: [embed] }).catch(() => null);
+        }
+      }
+
+      const guildConfig = await getGuildConfig(newGuild.id).catch(() => null);
+      const targetChannelId = guildConfig?.alertChannelId || guildConfig?.logChannelId;
+      if (targetChannelId) {
+        const channel = await newGuild.channels.fetch(targetChannelId).catch(() => null);
+        if (channel?.isTextBased()) {
+          await channel.send({ content: "🚨 @here **TRANSFERT DE PROPRIÉTÉ DÉTECTÉ !**", embeds: [embed] }).catch(() => null);
+        }
+      }
+
+      await SecurityLog.create({
+        guildId: newGuild.id,
+        type: "OWNERSHIP_TRANSFER",
+        executorId: newGuild.ownerId,
+        reason: "Transfert de propriété du serveur détecté",
+        details: { previousOwnerId: oldGuild.ownerId, newOwnerId: newGuild.ownerId },
+        punishmentApplied: "alert-only",
+      }).catch(() => null);
+
+      return;
+    }
+
+    // --- Nom / Vanity URL (comportement inchangé) ---
     const executor = await getExecutorWithRetry(newGuild, AuditLogEvent.GuildUpdate, undefined, 3000);
     if (!executor) return;
 
@@ -359,7 +423,7 @@ function registerAntiNuke(client) {
     }
   });
 
-  console.log("[AntiNuke Pro] Module Zero-Trust + Protection Quarantaine actif.");
+  console.log("[AntiNuke Pro] Module Zero-Trust + Protection Quarantaine + Prune + Ownership actif.");
 }
 
 module.exports = { registerAntiNuke };
