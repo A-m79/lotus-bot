@@ -1,16 +1,16 @@
 /**
- * Détection des liens de phishing/scam Discord, Steam, crypto, etc.
+ * Detection of Discord/Steam/crypto phishing/scam links, etc.
  *
- * S'appuie sur la base communautaire "Discord-AntiScam/scam-links"
- * (https://github.com/Discord-AntiScam/scam-links), activement maintenue,
- * qui recense plus de 30 000 domaines confirmés utilisés pour du vol de
- * compte/token (faux "Nitro gratuit", faux support Steam, faux airdrops
- * crypto, faux bots de vérification, etc.).
+ * Relies on the "Discord-AntiScam/scam-links" community database
+ * (https://github.com/Discord-AntiScam/scam-links), actively maintained,
+ * which tracks over 30,000 confirmed domains used for account/token theft
+ * (fake "free Nitro", fake Steam support, fake crypto airdrops, fake
+ * verification bots, etc.).
  *
- * La liste est rechargée toutes les 6h en mémoire (Set pour un lookup en
- * O(1)) plutôt que de la requêter à chaque message — un scam ne devient
- * exploitable qu'une fois public de toute façon, donc un léger délai de
- * propagation n'a aucun impact réel sur la protection.
+ * The list is reloaded into memory every 6h (a Set for O(1) lookup) rather
+ * than being queried on every message — a scam only becomes exploitable
+ * once it's public anyway, so a slight propagation delay has no real
+ * impact on protection.
  */
 
 const { punish } = require("./punisher");
@@ -29,12 +29,12 @@ async function refreshList() {
 
     if (Array.isArray(data) && data.length > 0) {
       scamDomains = new Set(data.map((d) => String(d).toLowerCase()));
-      console.log(`[PhishingDetection] Liste rechargée : ${scamDomains.size} domaines connus.`);
+      console.log(`[PhishingDetection] List reloaded: ${scamDomains.size} known domains.`);
     }
   } catch (err) {
-    // En cas d'échec (GitHub down, réseau...), on garde l'ancienne liste en
-    // mémoire plutôt que de se retrouver avec une protection vide.
-    console.error("[PhishingDetection] Échec du rechargement de la liste :", err.message);
+    // On failure (GitHub down, network issue...), keep the previous list in
+    // memory rather than ending up with no protection at all.
+    console.error("[PhishingDetection] Failed to reload the list:", err.message);
   }
 }
 
@@ -47,15 +47,15 @@ function extractHostnames(content) {
     try {
       hostnames.push(new URL(match).hostname.toLowerCase());
     } catch {
-      // URL malformée dans le message, on l'ignore simplement
+      // Malformed URL in the message, simply ignore it
     }
   }
   return hostnames;
 }
 
 /**
- * Vérifie le domaine exact ET ses domaines parents (ex: si "scam.com" est
- * listé, "sub.scam.com" doit aussi être détecté comme malveillant).
+ * Checks the exact domain AND its parent domains (e.g. if "scam.com" is
+ * listed, "sub.scam.com" must also be detected as malicious).
  */
 function isKnownScamDomain(hostname) {
   if (scamDomains.has(hostname)) return true;
@@ -73,7 +73,7 @@ function registerPhishingDetection(client) {
 
   client.on("messageCreate", async (message) => {
     if (!message.guild || message.author.bot) return;
-    if (!scamDomains.size) return; // liste pas encore chargée au démarrage
+    if (!scamDomains.size) return; // list not loaded yet at startup
 
     const guildConfig = await getGuildConfig(message.guild.id).catch(() => null);
     if (guildConfig?.antiSpamEnabled === false) return;
@@ -84,8 +84,8 @@ function registerPhishingDetection(client) {
     const matched = hostnames.find((h) => isKnownScamDomain(h));
     if (!matched) return;
 
-    // Suppression immédiate du message avant même d'appliquer la sanction,
-    // pour limiter au maximum le temps où le lien reste cliquable par d'autres.
+    // Delete the message immediately, before even applying the sanction,
+    // to minimize the time the link stays clickable by others.
     await message.delete().catch(() => null);
 
     await punish({
@@ -93,19 +93,19 @@ function registerPhishingDetection(client) {
       guildConfig,
       executorId: message.author.id,
       actionType: "PHISHING_LINK",
-      reason: `Lien de phishing/scam détecté (\`${matched}\`) — base Discord-AntiScam`,
+      reason: `Phishing/scam link detected (\`${matched}\`) — Discord-AntiScam database`,
       details: {
-        Domaine: matched,
-        Salon: `#${message.channel.name}`,
+        Domain: matched,
+        Channel: `#${message.channel.name}`,
       },
-      // Toujours la quarantaine, même pour un admin ou un compte whitelisté :
-      // un lien confirmé malveillant n'a pas droit à la tolérance habituelle,
-      // c'est justement le signe le plus fort qu'un compte est compromis.
+      // Always quarantine, even for an admin or a whitelisted account:
+      // a confirmed malicious link doesn't get the usual tolerance — it's
+      // precisely the strongest signal that an account is compromised.
       customSanction: "quarantine",
     });
   });
 
-  console.log("[PhishingDetection] Module de détection des liens de phishing actif.");
+  console.log("[PhishingDetection] Phishing link detection module active.");
 }
 
 module.exports = { registerPhishingDetection };

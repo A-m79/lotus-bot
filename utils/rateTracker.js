@@ -1,14 +1,14 @@
 /**
- * Tracker en mémoire (Map) : compte les occurrences d'un type d'action
- * par utilisateur et par serveur, sur une fenêtre de temps glissante.
+ * In-memory tracker (Map): counts occurrences of an action type
+ * per user and per server, over a sliding time window.
  *
- * Structure interne :
- * Map<guildId:userId:actionType, number[]> -> timestamps des actions
+ * Internal structure:
+ * Map<guildId:userId:actionType, number[]> -> action timestamps
  *
- * En mémoire = ultra rapide (pas de round-trip DB à chaque event Discord,
- * ce qui peut arriver plusieurs fois par seconde pendant un vrai nuke).
- * Si le process redémarre, les compteurs se reset : acceptable, un nuke
- * se joue en secondes donc l'historique long terme est dans SecurityLog (Mongo).
+ * In-memory = ultra fast (no DB round-trip on every Discord event,
+ * which can happen several times per second during an actual nuke).
+ * If the process restarts, the counters reset: acceptable, since a nuke
+ * plays out in seconds so long-term history lives in SecurityLog (Mongo).
  */
 class RateTracker {
   constructor() {
@@ -20,8 +20,8 @@ class RateTracker {
   }
 
   /**
-   * Enregistre une occurrence et retourne le nombre d'occurrences
-   * dans la fenêtre de temps donnée.
+   * Records an occurrence and returns the number of occurrences
+   * within the given time window.
    */
   hit(guildId, userId, actionType, windowMs) {
     const key = this._key(guildId, userId, actionType);
@@ -35,12 +35,12 @@ class RateTracker {
     return recent.length;
   }
 
-  /** Reset le compteur pour un user/action donné (après sanction, pour éviter double-punish) */
+  /** Resets the counter for a given user/action (after a sanction, to avoid double-punishing) */
   reset(guildId, userId, actionType) {
     this.store.delete(this._key(guildId, userId, actionType));
   }
 
-  /** Nettoyage périodique pour éviter que la Map grossisse indéfiniment */
+  /** Periodic cleanup to prevent the Map from growing indefinitely */
   cleanup(maxAgeMs = 60_000) {
     const now = Date.now();
     for (const [key, timestamps] of this.store.entries()) {
@@ -54,10 +54,10 @@ class RateTracker {
   }
 }
 
-// Singleton partagé par tout le bot
+// Shared singleton across the whole bot
 const rateTracker = new RateTracker();
 
-// Nettoyage toutes les minutes
+// Cleanup every minute
 setInterval(() => rateTracker.cleanup(), 60_000);
 
 module.exports = rateTracker;

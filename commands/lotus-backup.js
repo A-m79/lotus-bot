@@ -4,16 +4,16 @@ const { takeBackup, restoreBackup, getBackupInfo } = require("../utils/backupEng
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("lotus-backup")
-    .setDescription("Gestion complète des sauvegardes et restaurations du serveur")
+    .setDescription("Full management of server backups and restorations")
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand((sub) =>
-      sub.setName("creer").setDescription("Sauvegarder la structure actuelle (rôles, positions, salons)")
+      sub.setName("create").setDescription("Back up the current structure (roles, positions, channels)")
     )
     .addSubcommand((sub) =>
-      sub.setName("restaurer").setDescription("Restaure la hiérarchie et les éléments manquants")
+      sub.setName("restore").setDescription("Restores the hierarchy and missing elements")
     )
     .addSubcommand((sub) =>
-      sub.setName("info").setDescription("Affiche les détails de la dernière sauvegarde enregistrée")
+      sub.setName("info").setDescription("Displays details of the last saved backup")
     ),
 
   async execute(interaction) {
@@ -22,15 +22,15 @@ module.exports = {
 
     await interaction.deferReply({ ephemeral: true });
 
-    if (sub === "creer") {
+    if (sub === "create") {
       const data = await takeBackup(guild);
 
-      // Détails des rôles
+      // Role details
       const rolesFormatted = data.roles.length
         ? data.roles.map((r) => `• \`${r.name}\` (${r.hexColor})`).join("\n")
-        : "Aucun rôle.";
+        : "No roles.";
 
-      // Formater les salons par catégories
+      // Format channels by category
       let structureFormatted = "";
       for (const cat of data.categories) {
         structureFormatted += `📁 **${cat.name}**\n`;
@@ -41,14 +41,14 @@ module.exports = {
             structureFormatted += ` └ ${icon} \`${ch.name}\`\n`;
           });
         } else {
-          structureFormatted += ` *(vide)*\n`;
+          structureFormatted += ` *(empty)*\n`;
         }
       }
 
-      // Salons orphelins (sans catégorie)
+      // Orphan channels (no category)
       const orphanChannels = data.otherChannels.filter((c) => !c.parentName);
       if (orphanChannels.length) {
-        structureFormatted += `🌐 **Hors Catégorie**\n`;
+        structureFormatted += `🌐 **No Category**\n`;
         orphanChannels.forEach((ch) => {
           const icon = ch.type === ChannelType.GuildVoice ? "🔊" : "#";
           structureFormatted += ` └ ${icon} \`${ch.name}\`\n`;
@@ -56,25 +56,25 @@ module.exports = {
       }
 
       const embed = new EmbedBuilder()
-        .setTitle("💾 Sauvegarde Détaillée Réussie !")
+        .setTitle("💾 Detailed Backup Successful!")
         .setColor("#FF2A2A")
-        .setDescription("La structure complète a été enregistrée avec les paramètres suivants :")
+        .setDescription("The complete structure has been saved with the following parameters:")
         .addFields(
           {
-            name: "⚙️ Métadonnées capturées",
+            name: "⚙️ Captured Metadata",
             value:
-              "• Hiérarchie & Positions\n• Permissions des rôles\n• Permissions spécifiques des salons (overwrites)\n• Couleurs & Hoist rôles\n• Sujets, Bitrate & Option +18",
+              "• Hierarchy & Positions\n• Role permissions\n• Channel-specific permissions (overwrites)\n• Role colors & Hoist\n• Topics, Bitrate & Age-restricted option",
           },
           {
-            name: `🎭 Rôles enregistrés (${data.roles.length})`,
-            value: rolesFormatted.length > 1024 ? rolesFormatted.slice(0, 1000) + "\n*...et autres*" : rolesFormatted,
+            name: `🎭 Roles saved (${data.roles.length})`,
+            value: rolesFormatted.length > 1024 ? rolesFormatted.slice(0, 1000) + "\n*...and more*" : rolesFormatted,
           },
           {
-            name: `📂 Arborescence des Salons (${data.otherChannels.length + data.categories.length})`,
-            value: structureFormatted.length > 1024 ? structureFormatted.slice(0, 1000) + "\n*...et autres*" : structureFormatted || "Aucun salon.",
+            name: `📂 Channel Tree (${data.otherChannels.length + data.categories.length})`,
+            value: structureFormatted.length > 1024 ? structureFormatted.slice(0, 1000) + "\n*...and more*" : structureFormatted || "No channels.",
           },
           {
-            name: "📅 Date d'enregistrement",
+            name: "📅 Save Date",
             value: `<t:${Math.floor(data.updatedAt.getTime() / 1000)}:F>`,
           }
         )
@@ -86,48 +86,48 @@ module.exports = {
     if (sub === "info") {
       const backup = await getBackupInfo(guild.id);
       if (!backup) {
-        return interaction.editReply("❌ Aucune sauvegarde trouvée pour ce serveur.");
+        return interaction.editReply("❌ No backup found for this server.");
       }
 
       const roleList = backup.roles.map((r) => `• \`${r.name}\` (${r.hexColor})`).join("\n");
       const channelList = backup.channels.map((c) => `• \`${c.name}\``).join("\n");
 
       const embed = new EmbedBuilder()
-        .setTitle("📊 Sauvegarde Actuelle")
+        .setTitle("📊 Current Backup")
         .setColor("#FF2A2A")
         .addFields(
-          { name: "📅 Enregistrée le", value: `<t:${Math.floor(new Date(backup.updatedAt).getTime() / 1000)}:F>` },
-          { name: `🎭 Rôles (${backup.roles.length})`, value: roleList.length > 1024 ? roleList.slice(0, 1000) + "\n*...*" : roleList },
-          { name: `📁 Salons/Catégories (${backup.channels.length})`, value: channelList.length > 1024 ? channelList.slice(0, 1000) + "\n*...*" : channelList }
+          { name: "📅 Saved on", value: `<t:${Math.floor(new Date(backup.updatedAt).getTime() / 1000)}:F>` },
+          { name: `🎭 Roles (${backup.roles.length})`, value: roleList.length > 1024 ? roleList.slice(0, 1000) + "\n*...*" : roleList },
+          { name: `📁 Channels/Categories (${backup.channels.length})`, value: channelList.length > 1024 ? channelList.slice(0, 1000) + "\n*...*" : channelList }
         )
         .setFooter({ text: "Lotus Security System" });
 
       return interaction.editReply({ embeds: [embed] });
     }
 
-    if (sub === "restaurer") {
+    if (sub === "restore") {
       const result = await restoreBackup(guild);
 
       if (!result) {
-        return interaction.editReply("❌ Aucune sauvegarde trouvée pour ce serveur.");
+        return interaction.editReply("❌ No backup found for this server.");
       }
 
       const rolesText = result.restoredRoles.length
         ? result.restoredRoles.map((r) => `• \`${r}\``).join("\n")
-        : "Aucun rôle manquant.";
+        : "No missing roles.";
 
       const channelsText = result.restoredChannels.length
         ? result.restoredChannels.map((c) => `• ${c}`).join("\n")
-        : "Aucun salon manquant.";
+        : "No missing channels.";
 
       const embed = new EmbedBuilder()
-        .setTitle("🔄 Restauration Terminée !")
+        .setTitle("🔄 Restoration Complete!")
         .setColor("#57F287")
-        .setDescription("Les positions, éléments manquants et permissions ont été réajustés.")
+        .setDescription("Positions, missing elements, and permissions have been readjusted.")
         .addFields(
-          { name: `🎭 Rôles Restaurés (${result.restoredRoles.length})`, value: rolesText.length > 1024 ? rolesText.slice(0, 1000) + "\n*...*" : rolesText },
-          { name: `📁 Salons Restaurés (${result.restoredChannels.length})`, value: channelsText.length > 1024 ? channelsText.slice(0, 1000) + "\n*...*" : channelsText },
-          { name: `🔐 Permissions de salons réappliquées`, value: `\`${result.repairedPermissions ?? 0}\` salon(s)/catégorie(s)` }
+          { name: `🎭 Roles Restored (${result.restoredRoles.length})`, value: rolesText.length > 1024 ? rolesText.slice(0, 1000) + "\n*...*" : rolesText },
+          { name: `📁 Channels Restored (${result.restoredChannels.length})`, value: channelsText.length > 1024 ? channelsText.slice(0, 1000) + "\n*...*" : channelsText },
+          { name: `🔐 Channel Permissions Reapplied`, value: `\`${result.repairedPermissions ?? 0}\` channel(s)/categorie(s)` }
         )
         .setFooter({ text: "Lotus Security System" });
 

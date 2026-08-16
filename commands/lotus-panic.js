@@ -9,16 +9,16 @@ const { getGuildConfig, invalidate } = require("../utils/configCache");
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("lotus-panic")
-    .setDescription("Active ou désactive le mode panique (lockdown total du serveur)")
+    .setDescription("Enables or disables panic mode (full server lockdown)")
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addStringOption((opt) =>
       opt
         .setName("action")
-        .setDescription("Activer ou désactiver le lockdown")
+        .setDescription("Enable or disable the lockdown")
         .setRequired(true)
         .addChoices(
-          { name: "Activer", value: "on" },
-          { name: "Désactiver", value: "off" }
+          { name: "Enable", value: "on" },
+          { name: "Disable", value: "off" }
         )
     ),
 
@@ -34,10 +34,10 @@ module.exports = {
     );
 
     if (action === "on") {
-      // Monte le niveau de vérification au max (ralentit fortement les nouveaux comptes)
+      // Raises the verification level to max (strongly slows down new accounts)
       await guild.setVerificationLevel(GuildVerificationLevel.VeryHigh).catch(() => null);
 
-      // Empêche @everyone d'envoyer des messages sur tous les salons textuels
+      // Prevents @everyone from sending messages in all text channels
       for (const channel of textChannels.values()) {
         await channel.permissionOverwrites
           .edit(guild.roles.everyone, { SendMessages: false })
@@ -49,7 +49,7 @@ module.exports = {
       invalidate(guild.id);
 
       return interaction.editReply(
-        "🔒 **Lockdown activé.** Envoi de messages bloqué pour @everyone et vérification au maximum. Utilise `/lotus-panic off` quand la menace est passée."
+        "🔒 **Lockdown enabled.** Message sending blocked for @everyone and verification level set to maximum. Use `/lotus-panic off` once the threat has passed."
       );
     }
 
@@ -66,7 +66,7 @@ module.exports = {
       await guildConfig.save();
       invalidate(guild.id);
 
-      return interaction.editReply("🔓 **Lockdown désactivé.** Le serveur revient à la normale.");
+      return interaction.editReply("🔓 **Lockdown disabled.** The server has returned to normal.");
     }
   },
 };

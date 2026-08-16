@@ -1,7 +1,7 @@
 {
   "name": "lotus-security-bot",
   "version": "0.1.0",
-  "description": "Lotus - Bot de protection Discord (anti-nuke, anti-raid, anti-spam)",
+  "description": "Lotus - Discord protection bot (anti-nuke, anti-raid, anti-spam)",
   "main": "index.js",
   "type": "commonjs",
   "scripts": {

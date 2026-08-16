@@ -4,23 +4,23 @@ const GuildConfigSchema = new Schema(
   {
     guildId: { type: String, required: true, unique: true, index: true },
 
-    // Salons de logs/alertes
+    // Logs/alerts channels
     logChannelId: { type: String, default: null },
     alertChannelId: { type: String, default: null },
 
-    // Modules activés
+    // Enabled modules
     antiNukeEnabled: { type: Boolean, default: true },
     antiRaidEnabled: { type: Boolean, default: true },
     antiSpamEnabled: { type: Boolean, default: true },
     altDetectionEnabled: { type: Boolean, default: true },
 
-    // Système de vérification à l'entrée (Gate)
+    // Entry verification system (Gate)
     verificationEnabled: { type: Boolean, default: false },
     unverifiedRoleId: { type: String, default: null },
     verifiedRoleId: { type: String, default: null },
     verificationChannelId: { type: String, default: null },
 
-    // Seuils custom
+    // Custom thresholds
     thresholds: {
       channelDelete: Number,
       channelCreate: Number,
@@ -46,11 +46,11 @@ const GuildConfigSchema = new Schema(
     },
 
     quarantineRoleId: { type: String, default: null },
-    // Bug corrigé : ce champ était déjà écrit par lotus-setup.js mais absent du
-    // schéma, donc silencieusement ignoré par Mongoose (strict mode par défaut) à
-    // chaque .save(). La recherche du salon quarantaine retombait systématiquement
-    // sur le fallback par nom, ce qui fonctionnait mais sans jamais bénéficier du
-    // cache rapide par ID.
+    // Bug fixed: this field was already being written by lotus-setup.js but was
+    // missing from the schema, so it was silently ignored by Mongoose (strict mode
+    // by default) on every .save(). The quarantine channel lookup consistently fell
+    // back to searching by name, which worked but never benefited from the fast
+    // ID-based cache.
     quarantineChannelId: { type: String, default: null },
 
     lockdownActive: { type: Boolean, default: false },

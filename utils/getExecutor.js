@@ -1,15 +1,15 @@
 const { AuditLogEvent } = require("discord.js");
 
 /**
- * Discord n'inclut pas directement "qui a fait l'action" dans la plupart
- * des events (channelDelete, roleDelete, etc.) : il faut aller chercher
- * l'entrée correspondante dans les Audit Logs, la plus récente et
- * correspondant bien à la cible visée.
+ * Discord doesn't directly include "who performed the action" in most
+ * events (channelDelete, roleDelete, etc.): you have to look up the
+ * matching Audit Log entry, the most recent one that actually matches
+ * the intended target.
  *
  * @param {import('discord.js').Guild} guild
  * @param {import('discord.js').AuditLogEvent} auditType
- * @param {string} targetId - ID de la cible (channel/role/user supprimé) pour matcher la bonne entrée
- * @param {number} maxAgeMs - ignore les entrées trop vieilles (évite de matcher une vieille action)
+ * @param {string} targetId - ID of the target (deleted channel/role/user) to match the right entry
+ * @param {number} maxAgeMs - ignores entries that are too old (avoids matching a stale action)
  */
 async function getExecutor(guild, auditType, targetId, maxAgeMs = 5000) {
   try {
@@ -21,7 +21,7 @@ async function getExecutor(guild, auditType, targetId, maxAgeMs = 5000) {
     );
     return entry?.executor ?? null;
   } catch (err) {
-    console.error("[getExecutor] Impossible de lire les audit logs:", err.message);
+    console.error("[getExecutor] Unable to read audit logs:", err.message);
     return null;
   }
 }

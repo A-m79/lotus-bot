@@ -36,24 +36,24 @@ function registerAltDetection(client) {
     const accountAgeHours = Math.floor(accountAgeMs / (1000 * 60 * 60));
 
     const flags = [];
-    let isUltraRecent = accountAgeDays < 14; // Quarantaine directe si < 14 jours
+    let isUltraRecent = accountAgeDays < 14; // Direct quarantine if < 14 days
 
     if (accountAgeDays < 30) {
-      flags.push(`Compte récent (${accountAgeDays}j)`);
+      flags.push(`Recent account (${accountAgeDays}d)`);
     }
     if (!user.avatar) {
-      flags.push("Avatar par défaut");
+      flags.push("Default avatar");
     }
     const fullName = `${user.username} ${user.displayName || ""}`;
     if (SUSPICIOUS_PATTERNS.some((p) => p.test(fullName))) {
-      flags.push("Pseudo suspect");
+      flags.push("Suspicious username");
     }
 
-    // 1. CAS GRAVE : Compte < 14 jours -> Quarantaine directe
+    // 1. SEVERE CASE: Account < 14 days old -> Direct quarantine
     if (isUltraRecent) {
-      // Petit délai pour laisser inviteTracker.js le temps de résoudre l'invitation
-      // utilisée (il écoute le même event guildMemberAdd, l'ordre d'exécution
-      // entre modules n'est pas garanti sans ce court délai).
+      // Short delay to give inviteTracker.js time to resolve the invite used
+      // (it listens to the same guildMemberAdd event; execution order between
+      // modules isn't guaranteed without this brief delay).
       await new Promise((r) => setTimeout(r, 500));
       const inviteInfo = getInviteInfo(guild.id, user.id);
 
@@ -62,18 +62,18 @@ function registerAltDetection(client) {
         guildConfig,
         executorId: user.id,
         actionType: "ALT_DETECTION",
-        reason: `Compte extrêmement récent (${accountAgeDays}j / <14j)`,
+        reason: `Extremely recent account (${accountAgeDays}d / <14d)`,
         details: {
-          "Création": `${accountAgeDays}j (${accountAgeHours}h)`,
-          "Avatar": user.avatar ? "Personnalisé" : "Par défaut",
-          "Indicateurs": flags.join(" | "),
-          ...(inviteInfo ? { "Arrivé via": `${inviteInfo.type === "vanity" ? "URL vanity" : "Invitation"} \`${inviteInfo.code}\`` } : {}),
+          "Created": `${accountAgeDays}d (${accountAgeHours}h)`,
+          "Avatar": user.avatar ? "Custom" : "Default",
+          "Flags": flags.join(" | "),
+          ...(inviteInfo ? { "Joined via": `${inviteInfo.type === "vanity" ? "Vanity URL" : "Invite"} \`${inviteInfo.code}\`` } : {}),
         },
         customSanction: "quarantine",
       });
     }
 
-    // 2. CAS SUSPECT : Compte entre 14 et 30 jours, avatar par défaut, etc. -> Avertissement aux staff
+    // 2. SUSPICIOUS CASE: Account between 14 and 30 days old, default avatar, etc. -> Staff warning
     if (flags.length > 0) {
       const targetChannelId = guildConfig?.alertChannelId || guildConfig?.logChannelId;
       if (!targetChannelId) return;
@@ -87,24 +87,24 @@ function registerAltDetection(client) {
       const embed = new EmbedBuilder()
         .setColor("#FFCC00")
         .setAuthor({
-          name: `AVERTISSEMENT SUSPICION • ${guild.name.toUpperCase()}`,
+          name: `SUSPICION WARNING • ${guild.name.toUpperCase()}`,
           iconURL: guild.iconURL({ dynamic: true }) || undefined,
         })
-        .setTitle(`👀 Nouveau Membre Suspect — ${user.tag}`)
-        .setDescription(`Un membre est arrivé mais présente des critères suspects. Aucune sanction automatique n'a été appliquée.`)
+        .setTitle(`👀 Suspicious New Member — ${user.tag}`)
+        .setDescription(`A member has joined but shows suspicious criteria. No automatic sanction has been applied.`)
         .addFields(
-          { name: "👤 Utilisateur", value: `${user}\n\`ID: ${user.id}\``, inline: true },
-          { name: "📅 Ancienneté", value: `\`${accountAgeDays} jour(s)\``, inline: true },
-          { name: "🔍 Signalements", value: `\`${flags.join(" | ")}\``, inline: false }
+          { name: "👤 User", value: `${user}\n\`ID: ${user.id}\``, inline: true },
+          { name: "📅 Account age", value: `\`${accountAgeDays} day(s)\``, inline: true },
+          { name: "🔍 Flags", value: `\`${flags.join(" | ")}\``, inline: false }
         )
         .setThumbnail(user.displayAvatarURL({ dynamic: true, size: 256 }))
-        .setFooter({ text: "Lotus Security • Module de Suspicion" })
+        .setFooter({ text: "Lotus Security • Suspicion Module" })
         .setTimestamp();
 
       if (inviteInfo) {
         embed.addFields({
-          name: "🔗 Arrivé via",
-          value: `${inviteInfo.type === "vanity" ? "URL vanity" : "Invitation"} \`${inviteInfo.code}\``,
+          name: "🔗 Joined via",
+          value: `${inviteInfo.type === "vanity" ? "Vanity URL" : "Invite"} \`${inviteInfo.code}\``,
           inline: true,
         });
       }
@@ -113,7 +113,7 @@ function registerAltDetection(client) {
     }
   });
 
-  console.log("[Alt Detection Pro] Module de détection et d'avertissement actif (+ tracking invitations).");
+  console.log("[Alt Detection Pro] Detection and warning module active (+ invite tracking).");
 }
 
 module.exports = { registerAltDetection };

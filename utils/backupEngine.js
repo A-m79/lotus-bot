@@ -2,7 +2,7 @@ const GuildBackup = require("../models/GuildBackup");
 const { ChannelType } = require("discord.js");
 
 async function takeBackup(guild) {
-  // Capture des rôles triés par position
+  // Captures roles sorted by position
   const roles = guild.roles.cache
     .filter((r) => !r.managed && r.id !== guild.id)
     .sort((a, b) => b.position - a.position)
@@ -16,10 +16,10 @@ async function takeBackup(guild) {
       position: r.position,
     }));
 
-  // Capture des salons, y compris leurs permissions spécifiques (permissionOverwrites).
-  // Pour les overwrites de type "rôle", on sauvegarde aussi le NOM du rôle (roleName) :
-  // si un rôle est supprimé puis recréé par la restauration, il obtient un nouvel ID
-  // Discord, donc on ne peut pas se fier uniquement à l'ID sauvegardé pour le retrouver.
+  // Captures channels, including their specific permissions (permissionOverwrites).
+  // For "role"-type overwrites, we also save the role's NAME (roleName):
+  // if a role is deleted and later recreated during restoration, it gets a new
+  // Discord ID, so we can't rely solely on the saved ID to find it again.
   const channels = guild.channels.cache
     .sort((a, b) => a.position - b.position)
     .map((c) => ({
@@ -35,7 +35,7 @@ async function takeBackup(guild) {
       permissionOverwrites: c.permissionOverwrites
         ? c.permissionOverwrites.cache.map((ow) => ({
             id: ow.id,
-            type: ow.type, // 0 = rôle, 1 = membre
+            type: ow.type, // 0 = role, 1 = member
             roleName: ow.type === 0 ? guild.roles.cache.get(ow.id)?.name ?? null : null,
             allow: ow.allow.bitfield.toString(),
             deny: ow.deny.bitfield.toString(),
@@ -61,12 +61,12 @@ async function takeBackup(guild) {
 }
 
 /**
- * Résout les overwrites sauvegardés en overwrites applicables sur le serveur actuel.
- * - Les overwrites de rôle sont résolus par NOM (l'ID d'origine peut avoir changé
- *   si le rôle a dû être recréé pendant la restauration).
- * - Les overwrites de membre sont conservés par ID, seulement si le membre est
- *   toujours présent sur le serveur (sinon Discord rejetterait l'overwrite).
- * Les entrées introuvables sont simplement ignorées (pas d'erreur bloquante).
+ * Resolves the saved overwrites into overwrites applicable on the current server.
+ * - Role overwrites are resolved by NAME (the original ID may have changed
+ *   if the role had to be recreated during restoration).
+ * - Member overwrites are kept by ID, only if the member is still
+ *   present on the server (otherwise Discord would reject the overwrite).
+ * Entries that can't be resolved are simply skipped (not a blocking error).
  */
 async function resolveOverwrites(guild, overwritesBackup) {
   if (!overwritesBackup || !overwritesBackup.length) return [];
@@ -86,7 +86,7 @@ async function resolveOverwrites(guild, overwritesBackup) {
         resolved.push({ id: member.id, type: 1, allow: BigInt(ow.allow), deny: BigInt(ow.deny) });
       }
     } catch {
-      // Overwrite ignoré si résolution impossible (rôle/membre supprimé, ID invalide...)
+      // Overwrite skipped if resolution fails (role/member deleted, invalid ID...)
     }
   }
   return resolved;
@@ -100,7 +100,7 @@ async function restoreBackup(guild) {
   const restoredChannels = [];
   let repairedPermissions = 0;
 
-  // 1. Restauration des rôles manquants
+  // 1. Restore missing roles
   for (const r of backup.roles) {
     let existingRole = guild.roles.cache.find((role) => role.name === r.name);
     if (!existingRole) {
@@ -119,7 +119,7 @@ async function restoreBackup(guild) {
     }
   }
 
-  // Repositionnement hiérarchique des rôles
+  // Hierarchical repositioning of roles
   for (const r of backup.roles) {
     const role = guild.roles.cache.find((existing) => existing.name === r.name);
     if (role && role.position !== r.position) {
@@ -127,13 +127,13 @@ async function restoreBackup(guild) {
     }
   }
 
-  // 2. Séparation Catégories et Salons
+  // 2. Split Categories and Channels
   const categoriesBackup = backup.channels.filter((c) => c.type === ChannelType.GuildCategory);
   const otherChannelsBackup = backup.channels.filter((c) => c.type !== ChannelType.GuildCategory);
 
   const createdCategories = new Map();
 
-  // Restauration et positionnement des catégories (+ leurs permissions)
+  // Restore and position categories (+ their permissions)
   for (const cat of categoriesBackup) {
     let existingCat = guild.channels.cache.find(
       (c) => c.name === cat.name && c.type === ChannelType.GuildCategory
@@ -148,7 +148,7 @@ async function restoreBackup(guild) {
         })
         .catch(() => null);
 
-      if (existingCat) restoredChannels.push(`📁 ${cat.name} (Catégorie)`);
+      if (existingCat) restoredChannels.push(`📁 ${cat.name} (Category)`);
     }
 
     if (existingCat) {
@@ -157,9 +157,9 @@ async function restoreBackup(guild) {
         await existingCat.setPosition(cat.position).catch(() => null);
       }
 
-      // Réapplique les permissions de la catégorie (créée ou déjà existante) :
-      // ça permet aussi de "réparer" une catégorie dont les permissions auraient
-      // été modifiées sans que la catégorie elle-même soit supprimée.
+      // Reapplies the category's permissions (whether newly created or already
+      // existing): this also "repairs" a category whose permissions may have
+      // been changed without the category itself being deleted.
       const overwrites = await resolveOverwrites(guild, cat.permissionOverwrites);
       if (overwrites.length) {
         const applied = await existingCat.permissionOverwrites
@@ -170,7 +170,7 @@ async function restoreBackup(guild) {
     }
   }
 
-  // Restauration des salons textuels / vocaux (+ leurs permissions)
+  // Restore text/voice channels (+ their permissions)
   const currentChannels = await guild.channels.fetch();
 
   for (const ch of otherChannelsBackup) {
@@ -213,8 +213,8 @@ async function restoreBackup(guild) {
         targetChannel = newChannel;
       }
     } else {
-      // Salon déjà présent en nombre suffisant : on prend le premier match pour
-      // lui réappliquer ses permissions d'origine (répare un salon "ouvert" par erreur).
+      // Channel already present in sufficient number: take the first match to
+      // reapply its original permissions (repairs a channel accidentally "opened").
       targetChannel = matchingCurrent.first();
     }
 

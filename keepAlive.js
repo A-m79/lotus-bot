@@ -5,11 +5,11 @@ function keepAlive(client) {
 
   app.get("/", (req, res) => {
     res.send(
-      `Lotus est en ligne. Ping: ${client.ws.ping}ms | Serveurs: ${client.guilds.cache.size}`
+      `Lotus is online. Ping: ${client.ws.ping}ms | Servers: ${client.guilds.cache.size}`
     );
   });
 
-  // Endpoint dédié pour UptimeRobot (retourne juste un statut clair)
+  // Dedicated endpoint for UptimeRobot (just returns a clear status)
   app.get("/health", (req, res) => {
     res.status(200).json({
       status: "ok",
@@ -21,7 +21,7 @@ function keepAlive(client) {
 
   const port = process.env.PORT || 3000;
   app.listen(port, () => {
-    console.log(`[KeepAlive] Serveur web actif sur le port ${port}.`);
+    console.log(`[KeepAlive] Web server active on port ${port}.`);
   });
 }
 

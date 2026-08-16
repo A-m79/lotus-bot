@@ -1,23 +1,23 @@
 module.exports = {
-  // Fenêtre de temps (ms) pendant laquelle on compte les actions d'un user pour l'anti-nuke
+  // Time window (ms) during which a user's actions are counted for anti-nuke
   ANTINUKE_WINDOW_MS: 10_000,
 
-  // Seuils par défaut avant sanction (surchargeables par serveur via /lotus-thresholds)
+  // Default thresholds before a sanction triggers (overridable per server via /lotus-thresholds)
   DEFAULT_THRESHOLDS: {
     channelDelete: 6,
     channelCreate: 5,
-    channelUpdate: 2,       // ouverture de salon privé à @everyone
+    channelUpdate: 2,       // making a private channel visible to @everyone
     roleDelete: 3,
     roleCreate: 3,
     memberBan: 5,
     memberKick: 5,
-    memberPrune: 2,          // purge de masse des membres inactifs
+    memberPrune: 2,          // mass pruning of inactive members
     webhookCreate: 3,
     botAdd: 1,
     dangerousRoleUpdate: 2,
     emojiDelete: 5,
     stickerDelete: 5,
-    guildUpdate: 1,          // changement de nom/vanity URL : suspect dès la 1ère fois si non-owner
+    guildUpdate: 1,          // name/vanity URL change: suspicious on the 1st offense if not the owner
     antiSpam: 4,
   },
 
@@ -41,11 +41,11 @@ module.exports = {
     LOCKDOWN_ON_TRIGGER: true,
   },
 
-  // Auto-diagnostic périodique du bot (vérifie que Lotus a toujours ses perms admin)
-  SELF_DIAGNOSTIC_INTERVAL_MS: 15 * 60 * 1000, // toutes les 15 minutes
+  // Periodic bot self-diagnostic (checks Lotus still has admin permissions)
+  SELF_DIAGNOSTIC_INTERVAL_MS: 15 * 60 * 1000, // every 15 minutes
 
-  // Sauvegarde automatique programmée (backup/restore)
-  AUTO_BACKUP_INTERVAL_MS: 24 * 60 * 60 * 1000, // toutes les 24h
+  // Scheduled automatic backup (backup/restore)
+  AUTO_BACKUP_INTERVAL_MS: 24 * 60 * 60 * 1000, // every 24h
 
   EMBED_COLOR: 0x8e5cff,
   EMBED_COLOR_ALERT: 0xff4d4d,

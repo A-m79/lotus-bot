@@ -1,11 +1,11 @@
 /**
- * Suivi des invitations : identifie par quel lien (ou URL vanity) chaque
- * nouveau membre est arrivé, en comparant le nombre d'utilisations avant/après
- * chaque arrivée. Utile pour les enquêtes anti-raid : savoir quel lien a été
- * diffusé pour organiser un raid permet de le révoquer et de tracer sa source.
+ * Invite tracking: identifies which link (or vanity URL) each new member
+ * arrived through, by comparing use counts before/after each join. Useful
+ * for anti-raid investigations: knowing which link was spread to organize
+ * a raid lets you revoke it and trace its source.
  *
- * Nécessite que le bot ait la permission "Gérer le serveur" (Manage Guild)
- * pour lire les invitations existantes.
+ * Requires the bot to have the "Manage Server" permission (Manage Guild)
+ * to read existing invites.
  */
 
 const inviteCache = new Map(); // guildId -> Map(code -> uses)
@@ -24,8 +24,8 @@ async function cacheGuildInvites(guild) {
 
     inviteCache.set(guild.id, map);
   } catch {
-    // Permission "Gérer le serveur" manquante : on ignore silencieusement,
-    // le reste du bot fonctionne normalement sans cette fonctionnalité annexe.
+    // Missing "Manage Server" permission: silently ignored,
+    // the rest of the bot works normally without this side feature.
   }
 }
 
@@ -77,12 +77,12 @@ function registerInviteTracker(client) {
     }
   }, 60_000);
 
-  console.log("[InviteTracker] Suivi des invitations actif.");
+  console.log("[InviteTracker] Invite tracking active.");
 }
 
 /**
- * Retourne { code, type } si l'invitation utilisée par ce membre a pu être
- * identifiée dans les 5 minutes suivant son arrivée, sinon null.
+ * Returns { code, type } if the invite used by this member could be
+ * identified within 5 minutes of their join, otherwise null.
  */
 function getInviteInfo(guildId, memberId) {
   return resolvedJoins.get(`${guildId}:${memberId}`) ?? null;

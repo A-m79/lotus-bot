@@ -11,8 +11,8 @@ const SecurityLog = require("../models/SecurityLog");
 
 const activePunishments = new Set();
 
-// Sauvegarde temporaire des rôles admin retirés lors d'un timeout, pour permettre
-// au owner de les restaurer via le bouton envoyé en DM. Clé : `${guildId}_${executorId}`.
+// Temporary storage for admin roles removed during a timeout, allowing
+// the owner to restore them via the button sent in DM. Key: `${guildId}_${executorId}`.
 const savedAdminRoles = new Map();
 
 setInterval(() => {
@@ -59,25 +59,25 @@ function generateCaseId() {
 }
 
 /**
- * Assure l'existence du Rôle et du Salon de Quarantaine
+ * Ensures the Quarantine Role and Channel exist
  */
 async function ensureQuarantineSetup(guild) {
-  let quarantineRole = guild.roles.cache.find((r) => r.name === "Lotus Quarantaine");
+  let quarantineRole = guild.roles.cache.find((r) => r.name === "Lotus Quarantine");
   if (!quarantineRole) {
     quarantineRole = await guild.roles.create({
-      name: "Lotus Quarantaine",
+      name: "Lotus Quarantine",
       color: "#2f3136",
-      reason: "Création automatique du rôle de quarantaine Lotus Security",
+      reason: "Automatic creation of the Lotus Security quarantine role",
     }).catch(() => null);
   }
 
   let quarantineChannel = guild.channels.cache.find(
-    (c) => c.name === "🔒-quarantaine" && c.type === ChannelType.GuildText
+    (c) => c.name === "🔒-quarantine" && c.type === ChannelType.GuildText
   );
 
   if (!quarantineChannel && quarantineRole) {
     quarantineChannel = await guild.channels.create({
-      name: "🔒-quarantaine",
+      name: "🔒-quarantine",
       type: ChannelType.GuildText,
       permissionOverwrites: [
         {
@@ -107,21 +107,21 @@ async function ensureQuarantineSetup(guild) {
           ],
         },
       ],
-      reason: "Création automatique du salon d'isolement Lotus Security",
+      reason: "Automatic creation of the Lotus Security isolation channel",
     }).catch(() => null);
 
     if (quarantineChannel) {
       const infoEmbed = new EmbedBuilder()
-        .setTitle("🔒 Zone de Confinement — Lotus Security")
+        .setTitle("🔒 Containment Zone — Lotus Security")
         .setColor("#2b2d31")
         .setDescription(
-          "**Ce salon est un espace d'isolement sécurisé.**\n\n" +
-          "Si vous avez accès à ce salon, votre compte a été placé en **quarantaine automatique** suite à un déclenchement du système de sécurité.\n\n" +
-          "• **Accès Restreint :** Vous ne pouvez ni envoyer de messages, ni interagir avec le serveur.\n" +
-          "• **Visibilité Staff :** Les administrateurs peuvent vous identifier et examiner votre situation ici.\n\n" +
-          "*Veuillez patienter qu'un administrateur traite votre dossier.*"
+          "**This channel is a secure isolation space.**\n\n" +
+          "If you have access to this channel, your account has been placed in **automatic quarantine** following a security system trigger.\n\n" +
+          "• **Restricted Access:** You cannot send messages or interact with the server.\n" +
+          "• **Staff Visibility:** Administrators can identify you and review your situation here.\n\n" +
+          "*Please wait for an administrator to handle your case.*"
         )
-        .setFooter({ text: "Lotus Security System • Zone restreinte" });
+        .setFooter({ text: "Lotus Security System • Restricted Zone" });
 
       const pinnedMsg = await quarantineChannel.send({ embeds: [infoEmbed] }).catch(() => null);
       if (pinnedMsg) await pinnedMsg.pin().catch(() => null);
@@ -178,14 +178,14 @@ async function punish({
       switch (punishment) {
         case "ban":
           await guild.members.ban(executorId, { reason: `[Lotus #${caseId}] ${reason}` });
-          punishmentApplied = "BAN (Bannissement définitif)";
+          punishmentApplied = "BAN (Permanent ban)";
           statusIcon = "🔨";
           success = true;
           break;
 
         case "kick":
           await member.kick(`[Lotus #${caseId}] ${reason}`);
-          punishmentApplied = "KICK (Exclusion du serveur)";
+          punishmentApplied = "KICK (Removed from server)";
           statusIcon = "🥾";
           success = true;
           break;
@@ -206,7 +206,7 @@ async function punish({
               (role) => !role.permissions.has(PermissionFlagsBits.Administrator) && role.id !== guild.id
             );
 
-            await member.roles.set(safeRoles, `[Lotus #${caseId}] Retrait perm Admin pour appliquer le Timeout`);
+            await member.roles.set(safeRoles, `[Lotus #${caseId}] Admin permission removed to apply Timeout`);
             await new Promise((resolve) => setTimeout(resolve, 1000));
 
             savedAdminRoles.set(`${guild.id}_${executorId}`, {
@@ -231,11 +231,11 @@ async function punish({
             const currentRoles = member.roles.cache.filter((r) => r.id !== guild.id).map((r) => r.id);
             details.previousRoles = currentRoles;
             await member.roles.set([qRoleId], `[Lotus #${caseId}] ${reason}`);
-            punishmentApplied = "QUARANTAINE (Isolement)";
+            punishmentApplied = "QUARANTINE (Isolation)";
             statusIcon = "☣️";
           } else {
             await member.roles.set([], `[Lotus #${caseId}] ${reason}`);
-            punishmentApplied = "STRIP_ROLES (Fallback: Pas de rôle Quarantaine)";
+            punishmentApplied = "STRIP_ROLES (Fallback: No Quarantine role)";
             statusIcon = "⚠️";
           }
           success = true;
@@ -245,28 +245,28 @@ async function punish({
         default:
           if (qRoleId) {
             await member.roles.set([qRoleId], `[Lotus #${caseId}] ${reason}`);
-            punishmentApplied = "STRIP_ROLES + ISOLEMENT";
+            punishmentApplied = "STRIP_ROLES + ISOLATION";
             statusIcon = "☣️";
           } else {
             await member.roles.set([], `[Lotus #${caseId}] ${reason}`);
-            punishmentApplied = "STRIP_ROLES (Retrait de tous les rôles)";
+            punishmentApplied = "STRIP_ROLES (All roles removed)";
             statusIcon = "🚫";
           }
           success = true;
           break;
       }
     } else if (member && !canManageTarget) {
-      punishmentApplied = "ÉCHEC (Hiérarchie : Le rôle du bot est trop bas)";
+      punishmentApplied = "FAILED (Hierarchy: Bot's role is too low)";
       statusIcon = "❌";
     } else if (punishment === "ban") {
       await guild.members.ban(executorId, { reason: `[Lotus #${caseId}] ${reason}` });
-      punishmentApplied = "BAN (Bannissement à distance)";
+      punishmentApplied = "BAN (Remote ban)";
       statusIcon = "🔨";
       success = true;
     }
   } catch (err) {
-    console.error(`[Punisher #${caseId}] Erreur execution sur ${executorId}:`, err.message);
-    punishmentApplied = `ERREUR : ${err.message}`;
+    console.error(`[Punisher #${caseId}] Execution error on ${executorId}:`, err.message);
+    punishmentApplied = `ERROR: ${err.message}`;
     statusIcon = "⚠️";
   }
 
@@ -274,13 +274,13 @@ async function punish({
     const dmEmbed = new EmbedBuilder()
       .setColor("#FF2A2A")
       .setTitle(`🛡️ Protection Lotus Security — ${guild.name}`)
-      .setDescription(`Votre compte a déclenché une alerte de sécurité.`)
+      .setDescription(`Your account has triggered a security alert.`)
       .addFields(
-        { name: "Raison", value: `\`${reason}\``, inline: false },
-        { name: "Sanction", value: `\`${punishmentApplied}\``, inline: true },
-        { name: "Dossier ID", value: `\`#${caseId}\``, inline: true }
+        { name: "Reason", value: `\`${reason}\``, inline: false },
+        { name: "Punishment", value: `\`${punishmentApplied}\``, inline: true },
+        { name: "Case ID", value: `\`#${caseId}\``, inline: true }
       )
-      .setFooter({ text: "Si vous pensez qu'il s'agit d'une erreur, contactez un administrateur." })
+      .setFooter({ text: "If you believe this is a mistake, contact an administrator." })
       .setTimestamp();
 
     await targetUser.send({ embeds: [dmEmbed] }).catch(() => null);
@@ -300,12 +300,12 @@ async function punish({
   const embed = new EmbedBuilder()
     .setColor(success ? "#FF2A2A" : "#FFCC00")
     .setAuthor({ name: "LOTUS SECURITY SYSTEM", iconURL: guild.iconURL({ dynamic: true }) || undefined })
-    .setTitle(`${statusIcon} ${success ? "Menace Neutralisée" : "Alerte Sécurité"} — #${caseId}`)
-    .setDescription(`> **Motif :** \`${reason}\``)
+    .setTitle(`${statusIcon} ${success ? "Threat Neutralized" : "Security Alert"} — #${caseId}`)
+    .setDescription(`> **Reason:** \`${reason}\``)
     .addFields(
-      { name: "👤 Utilisateur", value: targetUser ? `${targetUser}\n\`${targetUser.tag}\`\n\`ID: ${executorId}\`` : `\`ID: ${executorId}\``, inline: true },
-      { name: "🛡️ Détecteur", value: `\`${actionType.toUpperCase()}\``, inline: true },
-      { name: "⚡ Sanction", value: `\`${punishmentApplied}\``, inline: true }
+      { name: "👤 User", value: targetUser ? `${targetUser}\n\`${targetUser.tag}\`\n\`ID: ${executorId}\`` : `\`ID: ${executorId}\``, inline: true },
+      { name: "🛡️ Detector", value: `\`${actionType.toUpperCase()}\``, inline: true },
+      { name: "⚡ Punishment", value: `\`${punishmentApplied}\``, inline: true }
     )
     .setFooter({ text: `Lotus Security System • Case #${caseId}` })
     .setTimestamp();
@@ -316,7 +316,7 @@ async function punish({
   if (targetChannelId) {
     const channel = await guild.channels.fetch(targetChannelId).catch(() => null);
     if (channel?.isTextBased()) {
-      const messageContent = isSevereAction(actionType) ? "🚨 @here **Alerte Sécurité Majeure Détectée !**" : undefined;
+      const messageContent = isSevereAction(actionType) ? "🚨 @here **Major Security Alert Detected!**" : undefined;
       await channel.send({ content: messageContent, embeds: [embed] }).catch(() => null);
       logSent = true;
     }
@@ -325,27 +325,27 @@ async function punish({
   if (!logSent || isSevereAction(actionType)) {
     const owner = await guild.fetchOwner().catch(() => null);
     if (owner) {
-      await owner.send({ content: `🚨 **Alerte Sécurité sur ${guild.name}**`, embeds: [embed] }).catch(() => null);
+      await owner.send({ content: `🚨 **Security Alert on ${guild.name}**`, embeds: [embed] }).catch(() => null);
     }
   }
 
   if (adminRoleRemoved) {
     const restoreButton = new ButtonBuilder()
       .setCustomId(`restore_admin_${guild.id}_${executorId}`)
-      .setLabel(`Rétablir le rôle admin de ${targetUser?.username ?? executorId}`)
+      .setLabel(`Restore admin role for ${targetUser?.username ?? executorId}`)
       .setStyle(ButtonStyle.Danger)
       .setEmoji("🔄");
 
     const row = new ActionRowBuilder().addComponents(restoreButton);
 
     const restoreEmbed = new EmbedBuilder()
-      .setTitle("⚠️ Rôle Administrateur retiré automatiquement")
+      .setTitle("⚠️ Administrator Role Automatically Removed")
       .setColor("#FF9900")
       .setDescription(
-        `Le membre ${targetUser ? `**${targetUser.tag}**` : `\`${executorId}\``} a déclenché une sanction sur **${guild.name}** ` +
-          `(\`${reason}\`) et s'est vu retirer temporairement son/ses rôle(s) donnant la permission Administrateur, avant un timeout de 10 minutes.\n\n` +
-          `Si c'est une erreur (faux positif), clique sur le bouton ci-dessous pour lui rendre son rôle immédiatement.\n` +
-          `Sinon, le timeout suit son cours normalement et le rôle reste retiré tant que tu ne cliques pas.`
+        `Member ${targetUser ? `**${targetUser.tag}**` : `\`${executorId}\``} triggered a sanction on **${guild.name}** ` +
+          `(\`${reason}\`) and had their Administrator-granting role(s) temporarily removed, before a 10-minute timeout.\n\n` +
+          `If this was a mistake (false positive), click the button below to restore their role immediately.\n` +
+          `Otherwise, the timeout runs its course normally and the role stays removed until you click.`
       )
       .setFooter({ text: `Lotus Security System • Case #${caseId}` })
       .setTimestamp();
@@ -373,29 +373,29 @@ async function handleRestoreAdminButton(interaction) {
   const [, , guildId, userId] = interaction.customId.split("_");
   const guild = interaction.client.guilds.cache.get(guildId);
 
-  if (!guild) return interaction.editReply("❌ Serveur introuvable (le bot n'y est peut-être plus).");
+  if (!guild) return interaction.editReply("❌ Server not found (the bot may no longer be in it).");
 
   const isServerOwner = interaction.user.id === guild.ownerId;
   const isBotOwner = process.env.OWNER_ID && interaction.user.id === process.env.OWNER_ID;
   if (!isServerOwner && !isBotOwner) {
-    return interaction.editReply("❌ Seul le propriétaire du serveur ou du bot peut valider cette restauration.");
+    return interaction.editReply("❌ Only the server owner or the bot owner can approve this restoration.");
   }
 
   const member = await guild.members.fetch(userId).catch(() => null);
-  if (!member) return interaction.editReply("❌ Le membre n'est plus sur le serveur.");
+  if (!member) return interaction.editReply("❌ The member is no longer on the server.");
 
   const saved = savedAdminRoles.get(`${guildId}_${userId}`);
   if (!saved || !saved.roleIds.length) {
-    return interaction.editReply("⚠️ Rien à restaurer (déjà fait ou fenêtre de 24h expirée).");
+    return interaction.editReply("⚠️ Nothing to restore (already done or the 24h window has expired).");
   }
 
   await member.roles.add(saved.roleIds).catch((err) => {
-    return interaction.editReply(`❌ Erreur lors du rétablissement : ${err.message}`);
+    return interaction.editReply(`❌ Error during restoration: ${err.message}`);
   });
 
   savedAdminRoles.delete(`${guildId}_${userId}`);
 
-  return interaction.editReply(`✅ Rôle(s) admin rétabli(s) avec succès pour **${member.user.tag}** !`);
+  return interaction.editReply(`✅ Admin role(s) successfully restored for **${member.user.tag}**!`);
 }
 
 module.exports = { punish, ensureQuarantineSetup, handleRestoreAdminButton };

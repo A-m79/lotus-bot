@@ -11,19 +11,19 @@ const { punish } = require("./punisher");
 const SecurityLog = require("../models/SecurityLog");
 const rateTracker = require("../utils/rateTracker");
 
-// Réserve d'emojis pour le challenge : à chaque tentative, 5 sont tirés au
-// hasard parmi cette liste, un seul est désigné "bonne réponse".
+// Emoji pool for the challenge: on each attempt, 5 are drawn at
+// random from this list, one is designated the "correct answer".
 const EMOJI_POOL = [
   "🦊", "🐸", "🐢", "🦁", "🐼", "🐧", "🦉", "🐙",
   "🍇", "🍉", "🍋", "🍒", "🍓", "🥝", "🍍", "🥥",
   "⭐", "🔥", "💎", "🎯", "🎲", "🎈", "🧩", "🔑",
 ];
 
-// État en mémoire des challenges en cours : `${guildId}:${userId}` -> { correctEmoji, expiresAt }
+// In-memory state of ongoing challenges: `${guildId}:${userId}` -> { correctEmoji, expiresAt }
 const pendingChallenges = new Map();
-const CHALLENGE_TTL_MS = 60_000; // le challenge expire après 60s d'inactivité
+const CHALLENGE_TTL_MS = 60_000; // the challenge expires after 60s of inactivity
 
-// Nettoyage périodique des challenges expirés
+// Periodic cleanup of expired challenges
 setInterval(() => {
   const now = Date.now();
   for (const [key, data] of pendingChallenges.entries()) {
@@ -38,7 +38,7 @@ function buildChallenge() {
 }
 
 /**
- * Applique le rôle "Non-Vérifié" à un nouveau membre humain, si le gate est activé.
+ * Applies the "Unverified" role to a new human member, if the gate is enabled.
  */
 async function registerVerificationGate(client) {
   client.on("guildMemberAdd", async (member) => {
@@ -50,58 +50,58 @@ async function registerVerificationGate(client) {
     const role = member.guild.roles.cache.get(guildConfig.unverifiedRoleId);
     if (!role) return;
 
-    await member.roles.add(role, "Lotus Verification Gate : en attente de vérification").catch(() => null);
+    await member.roles.add(role, "Lotus Verification Gate: pending verification").catch(() => null);
   });
 
-  // Protège automatiquement tout NOUVEAU salon créé après le /lotus-setup initial :
-  // sans ça, un salon créé après coup serait visible par défaut par les membres
-  // non-vérifiés (le gate ne protégerait alors plus que les salons existants au
-  // moment du setup).
+  // Automatically protects any NEW channel created after the initial /lotus-setup:
+  // without this, a channel created afterwards would be visible by default to
+  // unverified members (the gate would then only protect the channels that
+  // existed at setup time).
   client.on("channelCreate", async (channel) => {
     if (!channel.guild || !channel.permissionOverwrites) return;
 
     const guildConfig = await getGuildConfig(channel.guild.id).catch(() => null);
     if (!guildConfig?.verificationEnabled || !guildConfig.unverifiedRoleId) return;
 
-    // On ne touche pas au salon de vérification lui-même, ni à rien sous la
-    // catégorie SÉCURITÉ LOTUS (déjà protégée par le deny @everyone de la catégorie).
+    // We don't touch the verification channel itself, nor anything under the
+    // LOTUS SECURITY category (already protected by the category's @everyone deny).
     if (channel.id === guildConfig.verificationChannelId) return;
     const parent = channel.parent;
-    if (parent && (parent.name.toLowerCase().includes("lotus") || parent.name.toLowerCase().includes("sécurité"))) return;
+    if (parent && (parent.name.toLowerCase().includes("lotus") || parent.name.toLowerCase().includes("security"))) return;
 
     await channel.permissionOverwrites
-      .edit(guildConfig.unverifiedRoleId, { ViewChannel: false }, { reason: "Lotus Verification Gate : protection auto des nouveaux salons" })
+      .edit(guildConfig.unverifiedRoleId, { ViewChannel: false }, { reason: "Lotus Verification Gate: automatic protection for new channels" })
       .catch(() => null);
   });
 
-  console.log("[VerificationGate] Module chargé — gate de vérification à l'entrée actif.");
+  console.log("[VerificationGate] Module loaded — entry verification gate active.");
 }
 
 /**
- * Envoie le message d'accueil avec le bouton "Commencer la vérification"
- * dans le salon de vérification. Appelé depuis /lotus-setup.
- * `force` = true pour republier même si un message existe déjà (ex: après reset).
+ * Sends the welcome message with the "Start Verification" button in the
+ * verification channel. Called from /lotus-setup.
+ * `force` = true to repost even if a message already exists (e.g. after a reset).
  */
 async function postVerificationMessage(channel, force = false) {
   if (!force) {
     const pinned = await channel.messages.fetchPinned().catch(() => null);
     if (pinned && pinned.some((m) => m.author.id === channel.client.user.id)) {
-      return; // Message déjà présent, on ne duplique pas
+      return; // Message already present, avoid duplicating
     }
   }
 
   const embed = new EmbedBuilder()
-    .setTitle("🔐 Vérification requise")
+    .setTitle("🔐 Verification Required")
     .setColor("#8e5cff")
     .setDescription(
-      "Bienvenue ! Pour accéder au reste du serveur, tu dois d'abord confirmer que tu n'es pas un robot.\n\n" +
-        "Clique sur le bouton ci-dessous, puis suis les instructions affichées (elles ne sont visibles que par toi)."
+      "Welcome! To access the rest of the server, you must first confirm you're not a robot.\n\n" +
+        "Click the button below, then follow the instructions shown (they are only visible to you)."
     )
-    .setFooter({ text: "Lotus Security System • Vérification anti-raid" });
+    .setFooter({ text: "Lotus Security System • Anti-raid Verification" });
 
   const button = new ButtonBuilder()
     .setCustomId("lotus_verify_start")
-    .setLabel("🔓 Commencer la vérification")
+    .setLabel("🔓 Start Verification")
     .setStyle(ButtonStyle.Success);
 
   const row = new ActionRowBuilder().addComponents(button);
@@ -112,8 +112,8 @@ async function postVerificationMessage(channel, force = false) {
 }
 
 /**
- * Point d'entrée pour toutes les interactions liées à la vérification
- * (bouton de démarrage + boutons de réponse au challenge).
+ * Entry point for all verification-related interactions
+ * (start button + challenge answer buttons).
  */
 async function handleVerificationInteraction(interaction) {
   if (!interaction.isButton()) return;
@@ -121,22 +121,22 @@ async function handleVerificationInteraction(interaction) {
   const guild = interaction.guild;
   if (!guild) return;
 
-  // --- Bouton de démarrage ---
+  // --- Start button ---
   if (interaction.customId === "lotus_verify_start") {
     const guildConfig = await getGuildConfig(guild.id).catch(() => null);
     const member = interaction.member;
 
     if (!guildConfig?.unverifiedRoleId || !member.roles.cache.has(guildConfig.unverifiedRoleId)) {
-      return interaction.reply({ content: "✅ Tu es déjà vérifié, rien à faire !", ephemeral: true });
+      return interaction.reply({ content: "✅ You're already verified, nothing to do!", ephemeral: true });
     }
 
-    // Anti-brute-force : vérifie si l'utilisateur est temporairement verrouillé
+    // Anti-brute-force: checks if the user is temporarily locked out
     const lockKey = `${guild.id}:${interaction.user.id}`;
     const lock = pendingChallenges.get(`lock:${lockKey}`);
     if (lock && Date.now() < lock.expiresAt) {
       const remaining = Math.ceil((lock.expiresAt - Date.now()) / 1000);
       return interaction.reply({
-        content: `⏳ Trop de tentatives échouées. Réessaie dans ${remaining}s.`,
+        content: `⏳ Too many failed attempts. Try again in ${remaining}s.`,
         ephemeral: true,
       });
     }
@@ -156,22 +156,22 @@ async function handleVerificationInteraction(interaction) {
     const row = new ActionRowBuilder().addComponents(buttons);
 
     return interaction.reply({
-      content: `🧩 **Clique sur l'emoji suivant pour valider ta vérification :** ${correctEmoji}\n\n*(Ce challenge expire dans 60 secondes.)*`,
+      content: `🧩 **Click the following emoji to complete your verification:** ${correctEmoji}\n\n*(This challenge expires in 60 seconds.)*`,
       components: [row],
       ephemeral: true,
     });
   }
 
-  // --- Boutons de réponse ---
+  // --- Answer buttons ---
   if (interaction.customId.startsWith("lotus_verify_answer_")) {
     const parts = interaction.customId.split("_");
     const guildId = parts[3];
     const userId = parts[4];
     const answerIdx = Number(parts[5]);
 
-    // Défense : seul l'utilisateur qui a lancé le challenge peut y répondre
+    // Defense: only the user who started the challenge can answer it
     if (interaction.user.id !== userId || guild.id !== guildId) {
-      return interaction.reply({ content: "❌ Ce challenge ne t'appartient pas.", ephemeral: true });
+      return interaction.reply({ content: "❌ This challenge doesn't belong to you.", ephemeral: true });
     }
 
     const key = `${guildId}:${userId}`;
@@ -180,14 +180,14 @@ async function handleVerificationInteraction(interaction) {
     if (!challenge || Date.now() > challenge.expiresAt) {
       pendingChallenges.delete(key);
       return interaction.reply({
-        content: "⌛ Challenge expiré. Reclique sur le bouton de vérification pour recommencer.",
+        content: "⌛ Challenge expired. Click the verification button again to restart.",
         ephemeral: true,
       });
     }
 
-    // On ne peut pas comparer l'emoji cliqué directement (le customId n'encode que
-    // l'index du bouton dans SA rangée, propre à cette interaction précise) : on
-    // relit l'emoji du bouton cliqué depuis le composant lui-même.
+    // We can't compare the clicked emoji directly (the customId only encodes
+    // the button's index within ITS OWN row, specific to this interaction): we
+    // read the clicked button's emoji back from the component itself.
     const clickedEmoji = interaction.component?.emoji?.name;
     const isCorrect = clickedEmoji === challenge.correctEmoji;
 
@@ -198,9 +198,9 @@ async function handleVerificationInteraction(interaction) {
       const member = await guild.members.fetch(userId).catch(() => null);
 
       if (member && guildConfig?.unverifiedRoleId) {
-        await member.roles.remove(guildConfig.unverifiedRoleId, "Lotus Verification Gate : vérifié avec succès").catch(() => null);
+        await member.roles.remove(guildConfig.unverifiedRoleId, "Lotus Verification Gate: successfully verified").catch(() => null);
         if (guildConfig.verifiedRoleId) {
-          await member.roles.add(guildConfig.verifiedRoleId, "Lotus Verification Gate : rôle membre vérifié").catch(() => null);
+          await member.roles.add(guildConfig.verifiedRoleId, "Lotus Verification Gate: verified member role").catch(() => null);
         }
       }
 
@@ -208,30 +208,30 @@ async function handleVerificationInteraction(interaction) {
         guildId,
         type: "VERIFICATION_SUCCESS",
         executorId: userId,
-        reason: "Challenge de vérification réussi",
+        reason: "Verification challenge passed",
         punishmentApplied: null,
       }).catch(() => null);
 
       return interaction.update({
-        content: "✅ **Vérification réussie !** Tu as maintenant accès au serveur. Bienvenue 🎉",
+        content: "✅ **Verification successful!** You now have access to the server. Welcome 🎉",
         components: [],
       });
     }
 
-    // --- Mauvaise réponse : on incrémente le compteur d'échecs ---
+    // --- Wrong answer: increment the failure counter ---
     const failCount = rateTracker.hit(guildId, userId, "verifyFail", 2 * 60_000);
 
     await SecurityLog.create({
       guildId,
       type: "VERIFICATION_FAIL",
       executorId: userId,
-      reason: `Mauvaise réponse au challenge (échec n°${failCount})`,
+      reason: `Wrong answer on the challenge (failure #${failCount})`,
       punishmentApplied: null,
     }).catch(() => null);
 
     if (failCount >= 5) {
-      // Comportement typique d'un bot de raid qui clique au hasard en boucle :
-      // on escalade en quarantaine automatique plutôt que de laisser retenter indéfiniment.
+      // Typical behavior of a raid bot clicking at random in a loop:
+      // we escalate to automatic quarantine rather than allow infinite retries.
       rateTracker.reset(guildId, userId, "verifyFail");
       const guildConfig = await getGuildConfig(guildId).catch(() => null);
 
@@ -240,24 +240,24 @@ async function handleVerificationInteraction(interaction) {
         guildConfig,
         executorId: userId,
         actionType: "VERIFICATION_ABUSE",
-        reason: "Échecs répétés au challenge de vérification (comportement typique d'un bot de raid)",
-        details: { échecs: failCount },
+        reason: "Repeated failures on the verification challenge (typical raid-bot behavior)",
+        details: { failures: failCount },
         customSanction: "quarantine",
       });
 
       return interaction.update({
-        content: "🚫 **Trop d'échecs.** Ton compte a été placé en quarantaine pour examen par le staff.",
+        content: "🚫 **Too many failures.** Your account has been placed in quarantine for staff review.",
         components: [],
       });
     }
 
     if (failCount >= 3) {
-      // Verrouillage temporaire de 30s après 3 échecs, pour ralentir un éventuel bot
+      // Temporary 30s lockout after 3 failures, to slow down a potential bot
       pendingChallenges.set(`lock:${guildId}:${userId}`, { expiresAt: Date.now() + 30_000 });
     }
 
     return interaction.reply({
-      content: `❌ Mauvaise réponse (${failCount}/5 avant quarantaine automatique). Reclique sur le bouton de vérification pour réessayer.`,
+      content: `❌ Wrong answer (${failCount}/5 before automatic quarantine). Click the verification button again to try again.`,
       ephemeral: true,
     });
   }

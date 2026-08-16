@@ -7,7 +7,7 @@ const { punish } = require("./punisher");
 const { handleLogChannelDeletion, handleRoleDeletion } = require("../utils/logProtector");
 const SecurityLog = require("../models/SecurityLog");
 
-// Suivi temporaire des salons créés par utilisateur pour le Rollback complet
+// Temporary tracking of channels created per user, for full Rollback
 const createdChannelsTracker = new Map();
 
 function trackCreatedChannel(guildId, userId, channelId) {
@@ -67,8 +67,8 @@ async function checkAndPunish({ guild, executorId, actionType, reasonLabel, deta
   const baseThreshold = getThreshold(guildConfig, actionType);
   const isWL = isWhitelisted(guildConfig, executorId);
 
-  // La whitelist donne de la marge (+3 actions tolérées) mais n'accorde plus
-  // une immunité totale : un compte compromis whitelisté doit rester sanctionnable.
+  // Whitelist gives extra margin (+3 tolerated actions) but no longer grants
+  // total immunity: a compromised whitelisted account must remain punishable.
   const threshold = isWL ? baseThreshold + 3 : baseThreshold;
 
   const count = rateTracker.hit(guild.id, executorId, actionType, config.ANTINUKE_WINDOW_MS || 10000);
@@ -80,7 +80,7 @@ async function checkAndPunish({ guild, executorId, actionType, reasonLabel, deta
       guildConfig,
       executorId,
       actionType,
-      reason: `${reasonLabel} ${isWL ? "[SÉCURITÉ WHITELIST DÉPASSÉE]" : ""} (${count}/${threshold} en ${(config.ANTINUKE_WINDOW_MS || 10000) / 1000}s)`,
+      reason: `${reasonLabel} ${isWL ? "[WHITELIST SECURITY EXCEEDED]" : ""} (${count}/${threshold} in ${(config.ANTINUKE_WINDOW_MS || 10000) / 1000}s)`,
       details,
     });
     return true;
@@ -90,7 +90,7 @@ async function checkAndPunish({ guild, executorId, actionType, reasonLabel, deta
 }
 
 function registerAntiNuke(client) {
-  // --- Suppression de salons ---
+  // --- Channel deletion ---
   client.on("channelDelete", async (channel) => {
     if (!channel.guild) return;
     const executor = await getExecutorWithRetry(channel.guild, AuditLogEvent.ChannelDelete, channel.id);
@@ -106,12 +106,12 @@ function registerAntiNuke(client) {
       guild: channel.guild,
       executorId: executor.id,
       actionType: "channelDelete",
-      reasonLabel: "Suppression massive de salons",
+      reasonLabel: "Mass channel deletion",
       details: { channelId: channel.id, channelName: channel.name },
     });
   });
 
-  // --- Création massive de salons ---
+  // --- Mass channel creation ---
   client.on("channelCreate", async (channel) => {
     if (!channel.guild) return;
 
@@ -124,7 +124,7 @@ function registerAntiNuke(client) {
       guild: channel.guild,
       executorId: executor.id,
       actionType: "channelCreate",
-      reasonLabel: "Création massive de salons",
+      reasonLabel: "Mass channel creation",
       details: { channelId: channel.id, channelName: channel.name },
     });
 
@@ -138,13 +138,13 @@ function registerAntiNuke(client) {
       for (const chId of channelsToDelete) {
         const targetCh = channel.guild.channels.cache.get(chId);
         if (targetCh) {
-          await targetCh.delete("[Lotus Anti-Nuke] Nettoyage suite à création massive").catch(() => null);
+          await targetCh.delete("[Lotus Anti-Nuke] Cleanup following mass creation").catch(() => null);
         }
       }
     }
   });
 
-  // --- Modifications de perms de salon ---
+  // --- Channel permission changes ---
   client.on("channelUpdate", async (oldChannel, newChannel) => {
     if (!newChannel.guild) return;
 
@@ -162,13 +162,13 @@ function registerAntiNuke(client) {
         guild: newChannel.guild,
         executorId: executor.id,
         actionType: "channelUpdate",
-        reasonLabel: `Rendu du salon #${newChannel.name} accessible à @everyone`,
+        reasonLabel: `Made channel #${newChannel.name} visible to @everyone`,
         details: { channelId: newChannel.id, channelName: newChannel.name },
       });
     }
   });
 
-  // --- Suppression & Création de Rôles ---
+  // --- Role deletion & creation ---
   client.on("roleDelete", async (role) => {
     if (!role.guild) return;
     const executor = await getExecutorWithRetry(role.guild, AuditLogEvent.RoleDelete, role.id);
@@ -184,7 +184,7 @@ function registerAntiNuke(client) {
       guild: role.guild,
       executorId: executor.id,
       actionType: "roleDelete",
-      reasonLabel: "Suppression massive de rôles",
+      reasonLabel: "Mass role deletion",
       details: { roleId: role.id, roleName: role.name },
     });
   });
@@ -198,16 +198,16 @@ function registerAntiNuke(client) {
       guild: role.guild,
       executorId: executor.id,
       actionType: "roleCreate",
-      reasonLabel: "Création massive de rôles",
+      reasonLabel: "Mass role creation",
       details: { roleId: role.id, roleName: role.name },
     });
 
     if (punished) {
-      await role.delete("[Lotus Anti-Nuke] Nettoyage rôle parasite").catch(() => null);
+      await role.delete("[Lotus Anti-Nuke] Rogue role cleanup").catch(() => null);
     }
   });
 
-  // --- Bans & Kicks en masse ---
+  // --- Mass bans & kicks ---
   client.on("guildBanAdd", async (ban) => {
     const executor = await getExecutorWithRetry(ban.guild, AuditLogEvent.MemberBanAdd, ban.user.id);
     if (!executor) return;
@@ -216,7 +216,7 @@ function registerAntiNuke(client) {
       guild: ban.guild,
       executorId: executor.id,
       actionType: "memberBan",
-      reasonLabel: "Bans en masse",
+      reasonLabel: "Mass bans",
       details: { targetId: ban.user.id },
     });
   });
@@ -229,17 +229,17 @@ function registerAntiNuke(client) {
       guild: member.guild,
       executorId: executor.id,
       actionType: "memberKick",
-      reasonLabel: "Kicks en masse",
+      reasonLabel: "Mass kicks",
       details: { targetId: member.id },
     });
   });
 
-  // --- Purge de masse (Prune) ---
-  // Distincte des kicks individuels : Discord génère UNE SEULE entrée d'audit log
-  // de type MemberPrune pour une purge, avec le nombre de membres retirés d'un
-  // coup (entry.extra.removed). L'ancien pipeline basé sur guildMemberRemove +
-  // AuditLogEvent.MemberKick ne détectait JAMAIS ce cas (type d'audit différent),
-  // donc une purge de masse passait totalement inaperçue jusqu'ici.
+  // --- Mass purge (Prune) ---
+  // Distinct from individual kicks: Discord generates a SINGLE audit log entry
+  // of type MemberPrune for a purge, with the number of members removed at
+  // once (entry.extra.removed). The old pipeline based on guildMemberRemove +
+  // AuditLogEvent.MemberKick NEVER detected this case (different audit type),
+  // so a mass purge went completely unnoticed until now.
   client.on("guildAuditLogEntryCreate", async (entry, guild) => {
     if (entry.action !== AuditLogEvent.MemberPrune) return;
     if (!entry.executorId) return;
@@ -250,12 +250,12 @@ function registerAntiNuke(client) {
       guild,
       executorId: entry.executorId,
       actionType: "memberPrune",
-      reasonLabel: `Purge de masse des membres inactifs (${removedCount} retirés en une fois)`,
-      details: { removedCount, périodeJours: entry.extra?.days ?? "?" },
+      reasonLabel: `Mass purge of inactive members (${removedCount} removed at once)`,
+      details: { removedCount, periodDays: entry.extra?.days ?? "?" },
     });
   });
 
-  // --- Webhooks, Bots non autorisés ---
+  // --- Webhooks, unauthorized bots ---
   client.on("webhooksUpdate", async (channel) => {
     const executor = await getExecutorWithRetry(channel.guild, AuditLogEvent.WebhookCreate, undefined, 3000);
     if (!executor) return;
@@ -264,7 +264,7 @@ function registerAntiNuke(client) {
       guild: channel.guild,
       executorId: executor.id,
       actionType: "webhookCreate",
-      reasonLabel: "Création massive de webhooks",
+      reasonLabel: "Mass webhook creation",
       details: { channelId: channel.id },
     });
   });
@@ -279,12 +279,12 @@ function registerAntiNuke(client) {
       guild: member.guild,
       executorId: executor.id,
       actionType: "botAdd",
-      reasonLabel: "Ajout d'un bot non autorisé",
+      reasonLabel: "Unauthorized bot added",
       details: { botId: member.id, botTag: member.user.tag },
     });
   });
 
-  // --- Suppression Émojis & Stickers ---
+  // --- Emoji & Sticker deletion ---
   client.on("emojiDelete", async (emoji) => {
     const executor = await getExecutorWithRetry(emoji.guild, AuditLogEvent.EmojiDelete, emoji.id);
     if (!executor) return;
@@ -293,7 +293,7 @@ function registerAntiNuke(client) {
       guild: emoji.guild,
       executorId: executor.id,
       actionType: "emojiDelete",
-      reasonLabel: "Suppression massive d'émojis",
+      reasonLabel: "Mass emoji deletion",
       details: { emojiName: emoji.name },
     });
   });
@@ -306,33 +306,33 @@ function registerAntiNuke(client) {
       guild: sticker.guild,
       executorId: executor.id,
       actionType: "stickerDelete",
-      reasonLabel: "Suppression massive de stickers",
+      reasonLabel: "Mass sticker deletion",
       details: { stickerName: sticker.name },
     });
   });
 
-  // --- Modification du Serveur ---
+  // --- Server modification ---
   client.on("guildUpdate", async (oldGuild, newGuild) => {
-    // 🚨 Transfert de propriété : cas critique traité à part, sans seuil ni
-    // pipeline de sanction habituel. On ne peut pas "punir" le nouveau
-    // propriétaire (il a désormais un contrôle total, indépendant des rôles),
-    // donc on se contente d'une alerte maximale immédiate vers tous les
-    // canaux disponibles (ancien owner, owner du bot, salon d'alertes).
+    // 🚨 Ownership transfer: critical case handled separately, without the
+    // usual threshold or sanction pipeline. We can't "punish" the new owner
+    // (they now have total control, independent of roles), so we just send
+    // an immediate maximum-priority alert to every available channel
+    // (previous owner, bot owner, alert channel).
     if (oldGuild.ownerId !== newGuild.ownerId) {
       const botOwnerId = process.env.OWNER_ID;
       const previousOwner = await newGuild.client.users.fetch(oldGuild.ownerId).catch(() => null);
       const newOwner = await newGuild.client.users.fetch(newGuild.ownerId).catch(() => null);
 
       const embed = new EmbedBuilder()
-        .setTitle("🚨🚨 TRANSFERT DE PROPRIÉTÉ DU SERVEUR DÉTECTÉ 🚨🚨")
+        .setTitle("🚨🚨 SERVER OWNERSHIP TRANSFER DETECTED 🚨🚨")
         .setColor("#FF0000")
         .setDescription(
-          `La propriété de **${newGuild.name}** vient de changer de main.\n\n` +
-            `• **Ancien propriétaire :** ${previousOwner ? `${previousOwner.tag} (\`${previousOwner.id}\`)` : `\`${oldGuild.ownerId}\``}\n` +
-            `• **Nouveau propriétaire :** ${newOwner ? `${newOwner.tag} (\`${newOwner.id}\`)` : `\`${newGuild.ownerId}\``}\n` +
-            `• **Date & Heure :** <t:${Math.floor(Date.now() / 1000)}:F>\n\n` +
-            `⚠️ Si ce transfert n'était pas volontaire, le compte de l'ancien ou du nouveau propriétaire est probablement compromis. ` +
-            `Le nouveau propriétaire dispose désormais d'un contrôle total sur le serveur, y compris sur la configuration de Lotus.`
+          `Ownership of **${newGuild.name}** has just changed hands.\n\n` +
+            `• **Previous owner:** ${previousOwner ? `${previousOwner.tag} (\`${previousOwner.id}\`)` : `\`${oldGuild.ownerId}\``}\n` +
+            `• **New owner:** ${newOwner ? `${newOwner.tag} (\`${newOwner.id}\`)` : `\`${newGuild.ownerId}\``}\n` +
+            `• **Date & Time:** <t:${Math.floor(Date.now() / 1000)}:F>\n\n` +
+            `⚠️ If this transfer was not intentional, the previous or new owner's account is likely compromised. ` +
+            `The new owner now has total control over the server, including Lotus's configuration.`
         )
         .setTimestamp();
 
@@ -349,7 +349,7 @@ function registerAntiNuke(client) {
       if (targetChannelId) {
         const channel = await newGuild.channels.fetch(targetChannelId).catch(() => null);
         if (channel?.isTextBased()) {
-          await channel.send({ content: "🚨 @here **TRANSFERT DE PROPRIÉTÉ DÉTECTÉ !**", embeds: [embed] }).catch(() => null);
+          await channel.send({ content: "🚨 @here **OWNERSHIP TRANSFER DETECTED!**", embeds: [embed] }).catch(() => null);
         }
       }
 
@@ -357,7 +357,7 @@ function registerAntiNuke(client) {
         guildId: newGuild.id,
         type: "OWNERSHIP_TRANSFER",
         executorId: newGuild.ownerId,
-        reason: "Transfert de propriété du serveur détecté",
+        reason: "Server ownership transfer detected",
         details: { previousOwnerId: oldGuild.ownerId, newOwnerId: newGuild.ownerId },
         punishmentApplied: "alert-only",
       }).catch(() => null);
@@ -365,7 +365,7 @@ function registerAntiNuke(client) {
       return;
     }
 
-    // --- Nom / Vanity URL (comportement inchangé) ---
+    // --- Name / Vanity URL (behavior unchanged) ---
     const executor = await getExecutorWithRetry(newGuild, AuditLogEvent.GuildUpdate, undefined, 3000);
     if (!executor) return;
 
@@ -374,13 +374,13 @@ function registerAntiNuke(client) {
         guild: newGuild,
         executorId: executor.id,
         actionType: "guildUpdate",
-        reasonLabel: "Modification suspecte des paramètres du serveur",
+        reasonLabel: "Suspicious server settings change",
         details: { oldName: oldGuild.name, newName: newGuild.name },
       });
     }
   });
 
-  // --- Auto-Diagnostic : Perte de Perms Admin ---
+  // --- Self-Diagnostic: Loss of Admin Permissions ---
   client.on("guildMemberUpdate", async (oldMember, newMember) => {
     if (newMember.id !== client.user.id) return;
 
@@ -398,13 +398,13 @@ function registerAntiNuke(client) {
       const adminMentions = adminRoles.map((r) => `<@&${r.id}>`).join(" ") || "@here";
 
       const embed = new EmbedBuilder()
-        .setTitle("🚨 URGENT : Perte des Droits Administrateur de Lotus !")
+        .setTitle("🚨 URGENT: Lotus Lost Administrator Rights!")
         .setColor("#FF0000")
         .setDescription(
-          `Les permissions Administrateur de Lotus ont été supprimées.\n\n` +
-          `• **Auteur de la modification :** ${executor ? `${executor.tag} (\`${executor.id}\`)` : "Inconnu"}\n` +
-          `• **Date & Heure :** <t:${Math.floor(Date.now() / 1000)}:F>\n\n` +
-          `⚠️ **Lotus ne peut plus protéger le serveur correctement tant que ses accès ne sont pas rétablis.**`
+          `Lotus's Administrator permissions have been removed.\n\n` +
+          `• **Author of the change:** ${executor ? `${executor.tag} (\`${executor.id}\`)` : "Unknown"}\n` +
+          `• **Date & Time:** <t:${Math.floor(Date.now() / 1000)}:F>\n\n` +
+          `⚠️ **Lotus can no longer properly protect the server until its access is restored.**`
         )
         .setTimestamp();
 
@@ -423,7 +423,7 @@ function registerAntiNuke(client) {
     }
   });
 
-  console.log("[AntiNuke Pro] Module Zero-Trust + Protection Quarantaine + Prune + Ownership actif.");
+  console.log("[AntiNuke Pro] Zero-Trust Module + Quarantine Protection + Prune + Ownership active.");
 }
 
 module.exports = { registerAntiNuke };

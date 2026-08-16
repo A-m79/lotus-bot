@@ -11,26 +11,26 @@ const ACTION_CHOICES = Object.keys(config.DEFAULT_THRESHOLDS).map((key) => ({
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("lotus-thresholds")
-    .setDescription("Consulte ou ajuste les seuils de déclenchement anti-nuke / anti-spam de ce serveur")
+    .setDescription("View or adjust this server's anti-nuke / anti-spam trigger thresholds")
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand((sub) =>
-      sub.setName("voir").setDescription("Affiche tous les seuils actuels (par défaut ou personnalisés)")
+      sub.setName("view").setDescription("Displays all current thresholds (default or custom)")
     )
     .addSubcommand((sub) =>
       sub
-        .setName("definir")
-        .setDescription("Définit un seuil personnalisé pour ce serveur")
+        .setName("set")
+        .setDescription("Sets a custom threshold for this server")
         .addStringOption((opt) =>
           opt
             .setName("type")
-            .setDescription("Type d'action à ajuster")
+            .setDescription("Action type to adjust")
             .setRequired(true)
             .addChoices(...ACTION_CHOICES)
         )
         .addIntegerOption((opt) =>
           opt
-            .setName("valeur")
-            .setDescription("Nombre d'actions avant déclenchement de la sanction")
+            .setName("value")
+            .setDescription("Number of actions before the sanction triggers")
             .setRequired(true)
             .setMinValue(1)
             .setMaxValue(50)
@@ -39,11 +39,11 @@ module.exports = {
     .addSubcommand((sub) =>
       sub
         .setName("reset")
-        .setDescription("Retire le seuil personnalisé et revient à la valeur par défaut")
+        .setDescription("Removes the custom threshold and reverts to the default value")
         .addStringOption((opt) =>
           opt
             .setName("type")
-            .setDescription("Type d'action à réinitialiser")
+            .setDescription("Action type to reset")
             .setRequired(true)
             .addChoices(...ACTION_CHOICES)
         )
@@ -53,28 +53,28 @@ module.exports = {
     const sub = interaction.options.getSubcommand();
     const guildConfig = await getGuildConfig(interaction.guild.id);
 
-    if (sub === "voir") {
+    if (sub === "view") {
       const lines = Object.keys(config.DEFAULT_THRESHOLDS).map((key) => {
         const custom = guildConfig.thresholds?.[key];
         const hasCustom = custom !== undefined && custom !== null;
         const effective = hasCustom ? custom : config.DEFAULT_THRESHOLDS[key];
-        return `• \`${key}\` : **${effective}**${hasCustom ? " *(personnalisé)*" : ""}`;
+        return `• \`${key}\` : **${effective}**${hasCustom ? " *(custom)*" : ""}`;
       });
 
       const embed = new EmbedBuilder()
-        .setTitle("⚙️ Seuils Anti-Nuke / Anti-Spam actuels")
+        .setTitle("⚙️ Current Anti-Nuke / Anti-Spam Thresholds")
         .setColor(config.EMBED_COLOR)
         .setDescription(lines.join("\n"))
         .setFooter({
-          text: "Fenêtres : 10s (anti-nuke) • 7s (flood messages) • 15s (mentions massives) • 60s (pings individuels)",
+          text: "Windows: 10s (anti-nuke) • 7s (message flood) • 15s (mass mentions) • 60s (individual pings)",
         });
 
       return interaction.reply({ embeds: [embed], ephemeral: true });
     }
 
-    if (sub === "definir") {
+    if (sub === "set") {
       const type = interaction.options.getString("type");
-      const value = interaction.options.getInteger("valeur");
+      const value = interaction.options.getInteger("value");
 
       if (!guildConfig.thresholds) guildConfig.thresholds = {};
       guildConfig.thresholds[type] = value;
@@ -83,7 +83,7 @@ module.exports = {
       invalidate(interaction.guild.id);
 
       return interaction.reply({
-        content: `✅ Seuil \`${type}\` défini sur **${value}** pour ce serveur.`,
+        content: `✅ Threshold \`${type}\` set to **${value}** for this server.`,
         ephemeral: true,
       });
     }
@@ -98,7 +98,7 @@ module.exports = {
       invalidate(interaction.guild.id);
 
       return interaction.reply({
-        content: `✅ Seuil \`${type}\` réinitialisé à la valeur par défaut (**${config.DEFAULT_THRESHOLDS[type]}**).`,
+        content: `✅ Threshold \`${type}\` reset to its default value (**${config.DEFAULT_THRESHOLDS[type]}**).`,
         ephemeral: true,
       });
     }

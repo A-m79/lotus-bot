@@ -4,68 +4,68 @@ const { getGuildConfig, invalidate } = require("../utils/configCache");
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("lotus-whitelist")
-    .setDescription("Gère la liste blanche anti-nuke (jamais sanctionnés)")
+    .setDescription("Manages the anti-nuke whitelist (grants extra tolerance before sanctions)")
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand((sub) =>
       sub
-        .setName("ajouter")
-        .setDescription("Ajoute un membre à la whitelist")
+        .setName("add")
+        .setDescription("Adds a member to the whitelist")
         .addUserOption((opt) =>
-          opt.setName("membre").setDescription("Membre à whitelist").setRequired(true)
+          opt.setName("member").setDescription("Member to whitelist").setRequired(true)
         )
     )
     .addSubcommand((sub) =>
       sub
-        .setName("retirer")
-        .setDescription("Retire un membre de la whitelist")
+        .setName("remove")
+        .setDescription("Removes a member from the whitelist")
         .addUserOption((opt) =>
-          opt.setName("membre").setDescription("Membre à retirer").setRequired(true)
+          opt.setName("member").setDescription("Member to remove").setRequired(true)
         )
     )
-    .addSubcommand((sub) => sub.setName("liste").setDescription("Affiche la whitelist actuelle")),
+    .addSubcommand((sub) => sub.setName("list").setDescription("Displays the current whitelist")),
 
   async execute(interaction) {
     const sub = interaction.options.getSubcommand();
     const guildConfig = await getGuildConfig(interaction.guild.id);
 
-    // --- SOUS-COMMANDE : LISTE ---
-    if (sub === "liste") {
+    // --- SUBCOMMAND: LIST ---
+    if (sub === "list") {
       const list = guildConfig.whitelist?.length
         ? guildConfig.whitelist.map((id) => `<@${id}>`).join("\n")
-        : "Aucun membre whitelisté.";
-      return interaction.reply({ content: `**Whitelist actuelle:**\n${list}`, ephemeral: true });
+        : "No members whitelisted.";
+      return interaction.reply({ content: `**Current whitelist:**\n${list}`, ephemeral: true });
     }
 
-    const user = interaction.options.getUser("membre");
+    const user = interaction.options.getUser("member");
 
-    // --- CONTRÔLES DE SÉCURITÉ ET HIÉRARCHIE ---
+    // --- SECURITY & HIERARCHY CHECKS ---
     const isExecutorServerOwner = interaction.user.id === interaction.guild.ownerId;
     const isExecutorBotOwner = process.env.OWNER_ID && interaction.user.id === process.env.OWNER_ID;
     const isExecutorBypass = isExecutorServerOwner || isExecutorBotOwner;
 
-    // Si l'exécuteur N'EST PAS un Owner (Serveur ou Bot), on applique le filtrage strict
+    // If the executor is NOT an Owner (Server or Bot), apply strict filtering
     if (!isExecutorBypass) {
-      // 1. Protection des propriétaires contre les admins classiques
+      // 1. Protect owners from regular admins
       const isTargetOwner =
         user.id === interaction.guild.ownerId ||
         (process.env.OWNER_ID && user.id === process.env.OWNER_ID);
 
       if (isTargetOwner) {
         return interaction.reply({
-          content: "❌ **Sécurité :** Seul le propriétaire du serveur ou du bot peut modifier le statut d'un propriétaire.",
+          content: "❌ **Security:** Only the server owner or the bot owner can change an owner's status.",
           ephemeral: true,
         });
       }
 
-      // 2. Interdiction de modifier son propre statut pour un simple admin
+      // 2. Prevent a regular admin from changing their own status
       if (user.id === interaction.user.id) {
         return interaction.reply({
-          content: "❌ Vous ne pouvez pas modifier votre propre statut dans la whitelist.",
+          content: "❌ You cannot change your own whitelist status.",
           ephemeral: true,
         });
       }
 
-      // 3. Hiérarchie des rôles Discord
+      // 3. Discord role hierarchy
       const targetMember = await interaction.guild.members.fetch(user.id).catch(() => null);
       if (
         targetMember &&
@@ -73,32 +73,32 @@ module.exports = {
       ) {
         return interaction.reply({
           content:
-            "❌ **Sécurité :** Vous ne pouvez pas modifier la whitelist d'un membre ayant un rôle supérieur ou égal au vôtre.",
+            "❌ **Security:** You cannot modify the whitelist of a member with a role equal to or higher than yours.",
           ephemeral: true,
         });
       }
     }
 
-    // --- SOUS-COMMANDE : AJOUTER ---
-    if (sub === "ajouter") {
+    // --- SUBCOMMAND: ADD ---
+    if (sub === "add") {
       if (guildConfig.whitelist.includes(user.id)) {
-        return interaction.reply({ content: `${user} est déjà whitelisté.`, ephemeral: true });
+        return interaction.reply({ content: `${user} is already whitelisted.`, ephemeral: true });
       }
       guildConfig.whitelist.push(user.id);
       await guildConfig.save();
       invalidate(interaction.guild.id);
-      return interaction.reply({ content: `✅ ${user} ajouté à la whitelist.`, ephemeral: true });
+      return interaction.reply({ content: `✅ ${user} added to the whitelist.`, ephemeral: true });
     }
 
-    // --- SOUS-COMMANDE : RETIRER ---
-    if (sub === "retirer") {
+    // --- SUBCOMMAND: REMOVE ---
+    if (sub === "remove") {
       if (!guildConfig.whitelist.includes(user.id)) {
-        return interaction.reply({ content: `⚠️ ${user} n'est pas dans la whitelist.`, ephemeral: true });
+        return interaction.reply({ content: `⚠️ ${user} is not in the whitelist.`, ephemeral: true });
       }
       guildConfig.whitelist = guildConfig.whitelist.filter((id) => id !== user.id);
       await guildConfig.save();
       invalidate(interaction.guild.id);
-      return interaction.reply({ content: `✅ ${user} retiré de la whitelist.`, ephemeral: true });
+      return interaction.reply({ content: `✅ ${user} removed from the whitelist.`, ephemeral: true });
     }
   },
 };

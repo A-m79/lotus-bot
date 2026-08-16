@@ -3,12 +3,12 @@ const config = require("../config/config");
 const { getGuildConfig } = require("../utils/configCache");
 const SecurityLog = require("../models/SecurityLog");
 
-// Timestamps des joins récents, par serveur (fenêtre glissante en mémoire)
+// Recent join timestamps, per server (in-memory sliding window)
 const joinTimestamps = new Map(); // guildId -> number[]
 
 /**
- * Score de suspicion d'un membre qui vient de join (0 à 3).
- * Plus le score est haut, plus le compte ressemble à un compte de raid.
+ * Suspicion score for a member who just joined (0 to 3).
+ * The higher the score, the more the account looks like a raid account.
  */
 function suspicionScore(member) {
   let score = 0;
@@ -16,16 +16,16 @@ function suspicionScore(member) {
   const accountAge = Date.now() - member.user.createdTimestamp;
   if (accountAge < config.ANTIRAID.MIN_ACCOUNT_AGE_MS) score += 1;
 
-  if (!member.user.avatar) score += 1; // avatar par défaut
+  if (!member.user.avatar) score += 1; // default avatar
 
-  // Pattern de nom générique/random (ex: "user1234567", suite de chiffres en fin de nom)
+  // Generic/random username pattern (e.g. "user1234567", digits at the end of the name)
   if (/\d{4,}$/.test(member.user.username)) score += 1;
 
   return score;
 }
 
 async function triggerLockdown(guild, guildConfig, joinCount) {
-  if (guildConfig.lockdownActive) return; // déjà en lockdown, on évite de spam
+  if (guildConfig.lockdownActive) return; // already in lockdown, avoid spamming
 
   if (config.ANTIRAID.LOCKDOWN_ON_TRIGGER) {
     await guild.setVerificationLevel(GuildVerificationLevel.VeryHigh).catch(() => null);
@@ -59,18 +59,18 @@ async function triggerLockdown(guild, guildConfig, joinCount) {
           name: "LOTUS SECURITY SYSTEM",
           iconURL: guild.iconURL({ dynamic: true }) || undefined,
         })
-        .setTitle("🚨 RAID DÉTECTÉ — SERVEUR SOUS PROTECTION")
+        .setTitle("🚨 RAID DETECTED — SERVER UNDER PROTECTION")
         .setDescription(
-          `> **Détection :** \`${joinCount} arrivées suspectes\` en moins de \`${config.ANTIRAID.JOIN_WINDOW_MS / 1000}s\`.\n` +
+          `> **Detection:** \`${joinCount} suspicious joins\` in under \`${config.ANTIRAID.JOIN_WINDOW_MS / 1000}s\`.\n` +
             (config.ANTIRAID.LOCKDOWN_ON_TRIGGER
-              ? "> **Statut :** Lockdown automatique activé. Écriture fermée aux membres. Utilise `/lotus-panic off` une fois la menace passée."
-              : "> **Statut :** Lockdown automatique désactivé — vérification manuelle requise.")
+              ? "> **Status:** Automatic lockdown enabled. Message sending disabled for members. Use `/lotus-panic off` once the threat has passed."
+              : "> **Status:** Automatic lockdown disabled — manual review required.")
         )
-        .setFooter({ text: "Lotus Security System • Module Anti-Raid" })
+        .setFooter({ text: "Lotus Security System • Anti-Raid Module" })
         .setTimestamp();
 
       await channel.send({
-        content: "🚨 @here **ALERTE MAJEURE : RAID EN COURS DÉTECTÉ !**",
+        content: "🚨 @here **MAJOR ALERT: ACTIVE RAID DETECTED!**",
         embeds: [embed],
       }).catch(() => null);
     }
@@ -79,7 +79,7 @@ async function triggerLockdown(guild, guildConfig, joinCount) {
 
 function registerAntiRaid(client) {
   client.on("guildMemberAdd", async (member) => {
-    if (member.user.bot) return; // les bots sont gérés par l'anti-nuke (botAdd)
+    if (member.user.bot) return; // bots are handled by anti-nuke (botAdd)
 
     const guildConfig = await getGuildConfig(member.guild.id);
     if (!guildConfig?.antiRaidEnabled) return;
@@ -91,7 +91,7 @@ function registerAntiRaid(client) {
     timestamps.push(now);
     joinTimestamps.set(member.guild.id, timestamps);
 
-    // On ne déclenche que si le compte lui-même a un score de suspicion notable
+    // Only trigger if the account itself has a notable suspicion score
     const score = suspicionScore(member);
 
     if (timestamps.length >= config.ANTIRAID.JOIN_THRESHOLD && score >= 1) {
@@ -99,7 +99,7 @@ function registerAntiRaid(client) {
     }
   });
 
-  console.log("[AntiRaid] Module chargé et event listeners actifs.");
+  console.log("[AntiRaid] Module loaded and event listeners active.");
 }
 
 module.exports = { registerAntiRaid, suspicionScore };

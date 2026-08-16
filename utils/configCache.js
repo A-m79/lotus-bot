@@ -18,13 +18,13 @@ async function getGuildConfig(guildId) {
   return doc;
 }
 
-/** À appeler après toute modification de config (ex: commande /lotus config) */
+/** Call this after any config change (e.g. the /lotus-config command) */
 function invalidate(guildId) {
   cache.delete(guildId);
 }
 
-module.exports = { 
-  getGuildConfig, 
+module.exports = {
+  getGuildConfig,
   invalidate,
-  invalidateGuildConfig: invalidate // 👈 Alias de sécurité pour logProtector.js
+  invalidateGuildConfig: invalidate // 👈 Safety alias for logProtector.js
 };
