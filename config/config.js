@@ -8,13 +8,39 @@ module.exports = {
   // than a scripted/bot nuke — a deliberate actor can stay under the 10s
   // burst threshold indefinitely while still wiping the whole server over a
   // couple of minutes. This window catches that sustained pattern.
-  ANTINUKE_SUSTAINED_WINDOW_MS: 120_000,
+  ANTINUKE_SUSTAINED_WINDOW_MS: 90_000,
   // Multiplier applied to the (whitelist-adjusted) short-window threshold to
-  // get the sustained-window threshold. Deliberately less than
-  // (ANTINUKE_SUSTAINED_WINDOW_MS / ANTINUKE_WINDOW_MS) = 12, so the
-  // effective required rate over 2 minutes is much lower than over 10s —
-  // that's the point, it's meant to catch a slower, paced actor.
-  ANTINUKE_SUSTAINED_MULTIPLIER: 2.5,
+  // get the sustained-window threshold. Tuned down from an initial 2.5x
+  // (which required 23 actions for a whitelisted user — unrealistically
+  // high for most servers' actual channel count) to 1.3x: for a
+  // channelDelete threshold of 9 (whitelisted), that's 12 deletions in 90s,
+  // a pace slow enough to be clearly "patient" rather than a scripted
+  // burst, while still being a plausible number of channels to lose on a
+  // small-to-medium server before Lotus reacts.
+  ANTINUKE_SUSTAINED_MULTIPLIER: 1.3,
+
+  // Fix (protection scaled to server size): a fixed absolute threshold (e.g.
+  // "12 channel deletions") is meaningless for a small server that only has
+  // 10 channels total — it would NEVER trigger, no matter how corrupted the
+  // whitelisted account is, because the whole server gets wiped out before
+  // the count is reached. This checks the DESTRUCTION RATIO instead: if a
+  // given % of the server's current channels/roles/emojis/members is wiped
+  // out within the sustained window, it triggers regardless of the raw
+  // count or the fixed thresholds above. Applies on top of, not instead of,
+  // the burst/sustained absolute checks.
+  ANTINUKE_PERCENT_THRESHOLDS: {
+    channelDelete: 0.3,   // 30% of channels gone
+    roleDelete: 0.3,      // 30% of roles gone
+    emojiDelete: 0.4,
+    stickerDelete: 0.4,
+    memberBan: 0.15,      // banning members is destructive at a much lower %
+    memberKick: 0.15,
+  },
+  // Minimum raw count required before the % check applies at all — avoids a
+  // false alarm from a single legitimate deletion on a tiny server (e.g. 1
+  // channel deleted out of 3 would be 33%, technically over threshold, but
+  // is very likely a normal admin action, not a nuke).
+  ANTINUKE_PERCENT_MIN_COUNT: 3,
 
   // Default thresholds before a sanction triggers (overridable per server via /lotus-thresholds)
   DEFAULT_THRESHOLDS: {

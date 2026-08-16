@@ -48,6 +48,21 @@ function isWhitelisted(guildConfig, userId) {
   return guildConfig?.whitelist?.includes(userId) ?? false;
 }
 
+// Fix (protection scaled to server size): maps an actionType to a function
+// reading the CURRENT total of that resource on the guild. Used to compute
+// what % of it was just destroyed, since a fixed absolute count threshold
+// is meaningless for a server that doesn't have that many resources to
+// begin with (e.g. a 10-channel server can never hit a "12 deletions"
+// threshold — it runs out of channels first).
+const RESOURCE_TOTAL_GETTERS = {
+  channelDelete: (guild) => guild.channels.cache.size,
+  roleDelete: (guild) => guild.roles.cache.size,
+  emojiDelete: (guild) => guild.emojis.cache.size,
+  stickerDelete: (guild) => guild.stickers.cache.size,
+  memberBan: (guild) => guild.memberCount,
+  memberKick: (guild) => guild.memberCount,
+};
+
 async function getExecutorWithRetry(guild, auditLogEvent, targetId = undefined, maxDelay = 3000, attempts = 3) {
   for (let i = 0; i < attempts; i++) {
     const executor = await getExecutor(guild, auditLogEvent, targetId, maxDelay);
@@ -89,11 +104,41 @@ async function checkAndPunish({ guild, executorId, actionType, reasonLabel, deta
   const burstTriggered = count >= threshold;
   const sustainedTriggered = sustainedCount >= sustainedThreshold;
 
-  if (burstTriggered || sustainedTriggered) {
+  // Fix (protection scaled to server size): checks the destruction RATIO
+  // regardless of raw counts or thresholds, so a small server (which could
+  // never reach the absolute thresholds above without running out of
+  // resources) is still protected.
+  let percentTriggered = false;
+  let percentDetail = "";
+
+  const resourceGetter = RESOURCE_TOTAL_GETTERS[actionType];
+  const percentThreshold = config.ANTINUKE_PERCENT_THRESHOLDS?.[actionType];
+  const percentMinCount = config.ANTINUKE_PERCENT_MIN_COUNT ?? 3;
+
+  if (resourceGetter && percentThreshold && sustainedCount >= percentMinCount) {
+    const currentTotal = resourceGetter(guild);
+    // The event fires AFTER the resource is already removed from the
+    // guild's cache, so we reconstruct the pre-burst total by adding back
+    // however many we've already counted as destroyed in the sustained
+    // window (all by this same executor).
+    const estimatedOriginalTotal = currentTotal + sustainedCount;
+
+    if (estimatedOriginalTotal > 0) {
+      const destroyedRatio = sustainedCount / estimatedOriginalTotal;
+      if (destroyedRatio >= percentThreshold) {
+        percentTriggered = true;
+        percentDetail = `(${sustainedCount}/${estimatedOriginalTotal} = ${Math.round(destroyedRatio * 100)}% destroyed in ${sustainedWindowMs / 1000}s)`;
+      }
+    }
+  }
+
+  if (burstTriggered || sustainedTriggered || percentTriggered) {
     rateTracker.reset(guild.id, executorId, actionType);
 
     const reasonDetail = burstTriggered
       ? `(${count}/${threshold} in ${windowMs / 1000}s)`
+      : percentTriggered
+      ? percentDetail
       : `(${sustainedCount}/${sustainedThreshold} in ${sustainedWindowMs / 1000}s — paced/sustained pattern)`;
 
     await punish({
