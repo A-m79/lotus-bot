@@ -2,6 +2,20 @@ module.exports = {
   // Time window (ms) during which a user's actions are counted for anti-nuke
   ANTINUKE_WINDOW_MS: 10_000,
 
+  // Fix (paced/slow nuke detection): a second, longer window used alongside
+  // ANTINUKE_WINDOW_MS. Some actions (e.g. deleting a text channel) require
+  // manually retyping the channel name to confirm, which is naturally slower
+  // than a scripted/bot nuke — a deliberate actor can stay under the 10s
+  // burst threshold indefinitely while still wiping the whole server over a
+  // couple of minutes. This window catches that sustained pattern.
+  ANTINUKE_SUSTAINED_WINDOW_MS: 120_000,
+  // Multiplier applied to the (whitelist-adjusted) short-window threshold to
+  // get the sustained-window threshold. Deliberately less than
+  // (ANTINUKE_SUSTAINED_WINDOW_MS / ANTINUKE_WINDOW_MS) = 12, so the
+  // effective required rate over 2 minutes is much lower than over 10s —
+  // that's the point, it's meant to catch a slower, paced actor.
+  ANTINUKE_SUSTAINED_MULTIPLIER: 2.5,
+
   // Default thresholds before a sanction triggers (overridable per server via /lotus-thresholds)
   DEFAULT_THRESHOLDS: {
     channelDelete: 6,

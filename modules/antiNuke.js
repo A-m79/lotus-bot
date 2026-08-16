@@ -71,16 +71,37 @@ async function checkAndPunish({ guild, executorId, actionType, reasonLabel, deta
   // total immunity: a compromised whitelisted account must remain punishable.
   const threshold = isWL ? baseThreshold + 3 : baseThreshold;
 
-  const count = rateTracker.hit(guild.id, executorId, actionType, config.ANTINUKE_WINDOW_MS || 10000);
+  const windowMs = config.ANTINUKE_WINDOW_MS || 10000;
+  const count = rateTracker.hit(guild.id, executorId, actionType, windowMs);
 
-  if (count >= threshold) {
+  // Fix (paced/slow nuke detection): some actions (e.g. deleting a text
+  // channel) require manually retyping the channel name to confirm, which
+  // is naturally slower than a scripted/bot nuke. A deliberate actor can
+  // stay under the short-window threshold indefinitely while still wiping
+  // the whole server over a couple of minutes. This second, longer-window
+  // check (read-only, doesn't double-count the same hit() timestamp) catches
+  // that sustained pattern even when the short burst window never triggers.
+  const sustainedWindowMs = config.ANTINUKE_SUSTAINED_WINDOW_MS || 120_000;
+  const sustainedMultiplier = config.ANTINUKE_SUSTAINED_MULTIPLIER || 2.5;
+  const sustainedThreshold = Math.ceil(threshold * sustainedMultiplier);
+  const sustainedCount = rateTracker.count(guild.id, executorId, actionType, sustainedWindowMs);
+
+  const burstTriggered = count >= threshold;
+  const sustainedTriggered = sustainedCount >= sustainedThreshold;
+
+  if (burstTriggered || sustainedTriggered) {
     rateTracker.reset(guild.id, executorId, actionType);
+
+    const reasonDetail = burstTriggered
+      ? `(${count}/${threshold} in ${windowMs / 1000}s)`
+      : `(${sustainedCount}/${sustainedThreshold} in ${sustainedWindowMs / 1000}s — paced/sustained pattern)`;
+
     await punish({
       guild,
       guildConfig,
       executorId,
       actionType,
-      reason: `${reasonLabel} ${isWL ? "[WHITELIST SECURITY EXCEEDED]" : ""} (${count}/${threshold} in ${(config.ANTINUKE_WINDOW_MS || 10000) / 1000}s)`,
+      reason: `${reasonLabel} ${isWL ? "[WHITELIST SECURITY EXCEEDED]" : ""} ${reasonDetail}`,
       details,
     });
     return true;
