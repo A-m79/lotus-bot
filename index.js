@@ -7,7 +7,7 @@ const { connectDatabase } = require("./database/connect");
 const { keepAlive } = require("./keepAlive");
 const { getGuildConfig } = require("./utils/configCache");
 const { handleRestoreRolesButton } = require("./utils/logProtector");
-const { handleRestoreAdminButton } = require("./modules/punisher");
+const { handleRestoreAdminButton, registerQuarantineSync } = require("./modules/punisher");
 const { takeBackup } = require("./utils/backupEngine");
 const config = require("./config/config");
 
@@ -161,6 +161,10 @@ async function main() {
   registerVerificationGate(client);
   registerInviteTracker(client);
   registerPhishingDetection(client);
+  // Fix (leave/rejoin quarantine bypass): keeps GuildConfig.quarantinedUserIds
+  // in sync whenever staff manually releases a member from the Lotus
+  // Quarantine role, so they aren't stuck re-quarantined forever after being pardoned.
+  registerQuarantineSync(client);
 
   await client.login(process.env.DISCORD_TOKEN);
   keepAlive(client);

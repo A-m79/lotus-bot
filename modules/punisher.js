@@ -8,6 +8,7 @@ const {
 } = require("discord.js");
 const config = require("../config/config");
 const SecurityLog = require("../models/SecurityLog");
+const GuildConfig = require("../models/GuildConfig");
 
 const activePunishments = new Set();
 
@@ -165,6 +166,9 @@ async function punish({
   let statusIcon = "⚙️";
   let success = false;
   let adminRoleRemoved = false;
+  // Fix (leave/rejoin quarantine bypass): tracks whether this call actually
+  // placed the member into the isolation role, so we know to persist it below.
+  let appliedQuarantine = false;
 
   const me = await guild.members.fetchMe().catch(() => guild.members.me);
   const canManageTarget =
@@ -233,6 +237,7 @@ async function punish({
             await member.roles.set([qRoleId], `[Lotus #${caseId}] ${reason}`);
             punishmentApplied = "QUARANTINE (Isolation)";
             statusIcon = "☣️";
+            appliedQuarantine = true;
           } else {
             await member.roles.set([], `[Lotus #${caseId}] ${reason}`);
             punishmentApplied = "STRIP_ROLES (Fallback: No Quarantine role)";
@@ -247,6 +252,7 @@ async function punish({
             await member.roles.set([qRoleId], `[Lotus #${caseId}] ${reason}`);
             punishmentApplied = "STRIP_ROLES + ISOLATION";
             statusIcon = "☣️";
+            appliedQuarantine = true;
           } else {
             await member.roles.set([], `[Lotus #${caseId}] ${reason}`);
             punishmentApplied = "STRIP_ROLES (All roles removed)";
@@ -268,6 +274,17 @@ async function punish({
     console.error(`[Punisher #${caseId}] Execution error on ${executorId}:`, err.message);
     punishmentApplied = `ERROR: ${err.message}`;
     statusIcon = "⚠️";
+  }
+
+  // Fix (leave/rejoin quarantine bypass): persist quarantine state in the
+  // database (not in Discord roles, which are wiped on leave) so that
+  // verificationGate.js can re-quarantine the member instantly if they
+  // leave and rejoin instead of letting them redo the captcha.
+  if (appliedQuarantine) {
+    await GuildConfig.updateOne(
+      { guildId: guild.id },
+      { $addToSet: { quarantinedUserIds: executorId } }
+    ).catch((err) => console.error(`[Punisher #${caseId}] Failed to persist quarantine state:`, err.message));
   }
 
   if (targetUser && !targetUser.bot && success) {
@@ -398,4 +415,40 @@ async function handleRestoreAdminButton(interaction) {
   return interaction.editReply(`✅ Admin role(s) successfully restored for **${member.user.tag}**!`);
 }
 
-module.exports = { punish, ensureQuarantineSetup, handleRestoreAdminButton };
+/**
+ * Fix (leave/rejoin quarantine bypass): keeps the persistent quarantinedUserIds
+ * list in sync when a staff member manually removes the Lotus Quarantine role
+ * from a member (i.e. releases them). Without this, a released member would
+ * stay stuck in the persistent list forever and get re-quarantined on every
+ * future rejoin, even after being cleared by staff.
+ */
+function registerQuarantineSync(client) {
+  client.on("guildMemberUpdate", async (oldMember, newMember) => {
+    let qRoleId = null;
+
+    const guildConfigDoc = await GuildConfig.findOne({ guildId: newMember.guild.id }).lean().catch(() => null);
+    qRoleId = guildConfigDoc?.quarantineRoleId;
+
+    if (!qRoleId) {
+      const role = newMember.guild.roles.cache.find((r) => r.name === "Lotus Quarantine");
+      qRoleId = role?.id;
+    }
+    if (!qRoleId) return;
+
+    const hadRole = oldMember.roles.cache.has(qRoleId);
+    const hasRole = newMember.roles.cache.has(qRoleId);
+
+    // Role went from present to absent: staff released this member, so
+    // clear them from the persistent quarantine list too.
+    if (hadRole && !hasRole) {
+      await GuildConfig.updateOne(
+        { guildId: newMember.guild.id },
+        { $pull: { quarantinedUserIds: newMember.id } }
+      ).catch((err) => console.error("[Punisher] Failed to release quarantine state:", err.message));
+    }
+  });
+
+  console.log("[Punisher] Quarantine persistence sync active.");
+}
+
+module.exports = { punish, ensureQuarantineSetup, handleRestoreAdminButton, registerQuarantineSync };

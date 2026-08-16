@@ -53,6 +53,14 @@ const GuildConfigSchema = new Schema(
     // ID-based cache.
     quarantineChannelId: { type: String, default: null },
 
+    // Fix (leave/rejoin quarantine bypass): Discord does not persist a member's
+    // roles once they leave the server, so a quarantined member could previously
+    // just leave and rejoin to be handed the normal "Unverified" role again and
+    // pass the captcha, fully escaping quarantine. This array is the durable,
+    // database-backed source of truth for "who is currently in quarantine" and
+    // is checked directly (bypassing any cache) on guildMemberAdd.
+    quarantinedUserIds: { type: [String], default: [] },
+
     lockdownActive: { type: Boolean, default: false },
     whitelist: { type: [String], default: [] },
   },

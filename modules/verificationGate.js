@@ -9,6 +9,7 @@ const {
 const { getGuildConfig } = require("../utils/configCache");
 const { punish } = require("./punisher");
 const SecurityLog = require("../models/SecurityLog");
+const GuildConfig = require("../models/GuildConfig");
 const rateTracker = require("../utils/rateTracker");
 
 // Emoji pool for the challenge: on each attempt, 5 are drawn at
@@ -43,6 +44,43 @@ function buildChallenge() {
 async function registerVerificationGate(client) {
   client.on("guildMemberAdd", async (member) => {
     if (member.user.bot) return;
+
+    // Fix (leave/rejoin quarantine bypass): checked FIRST and read directly
+    // from the database (never from configCache), so there is no possible
+    // staleness window between a quarantine being applied and a member
+    // rejoining. Discord wipes a member's roles on leave, so without this
+    // check a quarantined member could simply leave and rejoin to be handed
+    // the normal Unverified role again, pass the captcha, and fully escape
+    // quarantine.
+    const isQuarantined = await GuildConfig.exists({
+      guildId: member.guild.id,
+      quarantinedUserIds: member.id,
+    }).catch(() => false);
+
+    if (isQuarantined) {
+      const guildConfigDoc = await GuildConfig.findOne({ guildId: member.guild.id }).lean().catch(() => null);
+      let quarantineRoleId = guildConfigDoc?.quarantineRoleId;
+      if (!quarantineRoleId) {
+        const role = member.guild.roles.cache.find((r) => r.name === "Lotus Quarantine");
+        quarantineRoleId = role?.id;
+      }
+
+      if (quarantineRoleId) {
+        await member.roles
+          .add(quarantineRoleId, "Lotus Verification Gate: member was already in quarantine before leaving")
+          .catch(() => null);
+      }
+
+      await SecurityLog.create({
+        guildId: member.guild.id,
+        type: "QUARANTINE_BYPASS_ATTEMPT",
+        executorId: member.id,
+        reason: "Member left and rejoined while in quarantine (bypass attempt)",
+        punishmentApplied: "RE_QUARANTINED",
+      }).catch(() => null);
+
+      return; // Skip the normal verification flow entirely
+    }
 
     const guildConfig = await getGuildConfig(member.guild.id).catch(() => null);
     if (!guildConfig?.verificationEnabled || !guildConfig.unverifiedRoleId) return;
