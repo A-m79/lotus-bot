@@ -104,13 +104,6 @@ async function checkAndPunish({ guild, executorId, actionType, reasonLabel, deta
   const burstTriggered = count >= threshold;
   const sustainedTriggered = sustainedCount >= sustainedThreshold;
 
-  // 🔧 TEMPORARY DEBUG — remove once the mass-deletion issue is diagnosed
-  console.log(
-    `[DEBUG antiNuke] actionType=${actionType} executorId=${executorId} isWL=${isWL} ` +
-    `count=${count}/${threshold} sustainedCount=${sustainedCount}/${sustainedThreshold} ` +
-    `burstTriggered=${burstTriggered} sustainedTriggered=${sustainedTriggered}`
-  );
-
   // Fix (protection scaled to server size): checks the destruction RATIO
   // regardless of raw counts or thresholds, so a small server (which could
   // never reach the absolute thresholds above without running out of
@@ -121,12 +114,6 @@ async function checkAndPunish({ guild, executorId, actionType, reasonLabel, deta
   const resourceGetter = RESOURCE_TOTAL_GETTERS[actionType];
   const percentThreshold = config.ANTINUKE_PERCENT_THRESHOLDS?.[actionType];
   const percentMinCount = config.ANTINUKE_PERCENT_MIN_COUNT ?? 3;
-
-  // 🔧 TEMPORARY DEBUG — remove once the mass-deletion issue is diagnosed
-  console.log(
-    `[DEBUG antiNuke] percent-eligibility actionType=${actionType} hasResourceGetter=${!!resourceGetter} ` +
-    `percentThreshold=${percentThreshold} percentMinCount=${percentMinCount} sustainedCount=${sustainedCount}`
-  );
 
   if (resourceGetter && percentThreshold && sustainedCount >= percentMinCount) {
     const currentTotal = resourceGetter(guild);
@@ -142,14 +129,6 @@ async function checkAndPunish({ guild, executorId, actionType, reasonLabel, deta
         percentTriggered = true;
         percentDetail = `(${sustainedCount}/${estimatedOriginalTotal} = ${Math.round(destroyedRatio * 100)}% destroyed in ${sustainedWindowMs / 1000}s)`;
       }
-      // 🔧 TEMPORARY DEBUG — remove once the mass-deletion issue is diagnosed
-      console.log(
-        `[DEBUG antiNuke] percent-check actionType=${actionType} currentTotal=${currentTotal} ` +
-        `estimatedOriginalTotal=${estimatedOriginalTotal} ratio=${(destroyedRatio * 100).toFixed(1)}% ` +
-        `percentThreshold=${percentThreshold * 100}% percentTriggered=${percentTriggered}`
-      );
-    } else {
-      console.log(`[DEBUG antiNuke] percent-check skipped: estimatedOriginalTotal is 0`);
     }
   }
 
@@ -181,13 +160,6 @@ function registerAntiNuke(client) {
   client.on("channelDelete", async (channel) => {
     if (!channel.guild) return;
     const executor = await getExecutorWithRetry(channel.guild, AuditLogEvent.ChannelDelete, channel.id);
-
-    // 🔧 TEMPORARY DEBUG — remove once the mass-deletion issue is diagnosed
-    console.log(
-      `[DEBUG antiNuke] channelDelete channel=#${channel.name} (${channel.id}) executorFound=${!!executor} ` +
-      `executorTag=${executor?.tag ?? "N/A"}`
-    );
-
     if (!executor) return;
 
     const handledByLogProtector = await handleLogChannelDeletion(channel.guild, channel, executor);

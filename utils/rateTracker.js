@@ -22,19 +22,40 @@ class RateTracker {
   }
 
   /**
-   * Records an occurrence and returns the number of occurrences
-   * within the given time window.
+   * Records an occurrence and returns the number of occurrences within the
+   * given window.
+   *
+   * Bug fixed (sustained/% checks permanently under-reporting): this used
+   * to filter the STORED array down to the caller's own `windowMs` before
+   * saving it back — since the only caller of hit() in the codebase passes
+   * the short burst window (10s), every single hit() call was silently
+   * truncating the shared history down to 10 seconds, no matter how long a
+   * window some OTHER function (count(), for the 90s sustained check) might
+   * need to read later. In practice this meant count(sustainedWindowMs)
+   * could never see anything older than ~10s, because hit() had already
+   * erased it from storage on its very next call — the sustained/paced and
+   * percent-based checks could never accumulate past whatever the short
+   * window's steady-state count happened to be, making them functionally
+   * dead for any burst spread across more than ~10 seconds.
+   *
+   * Fix: storage now always retains history up to the LONGEST window any
+   * caller might need (the sustained window, from config), regardless of
+   * the short windowMs passed to this specific call. The count returned to
+   * THIS caller is still correctly scoped to their own windowMs — only the
+   * persisted data keeps the longer history alive for other callers.
    */
   hit(guildId, userId, actionType, windowMs) {
     const key = this._key(guildId, userId, actionType);
     const now = Date.now();
     const timestamps = this.store.get(key) || [];
 
-    const recent = timestamps.filter((t) => now - t <= windowMs);
-    recent.push(now);
+    const retentionMs = Math.max(windowMs, config.ANTINUKE_SUSTAINED_WINDOW_MS || 120_000);
+    const retained = timestamps.filter((t) => now - t <= retentionMs);
+    retained.push(now);
 
-    this.store.set(key, recent);
-    return recent.length;
+    this.store.set(key, retained);
+
+    return retained.filter((t) => now - t <= windowMs).length;
   }
 
   /**
@@ -42,11 +63,12 @@ class RateTracker {
    * push a new timestamp, it just counts how many already-recorded
    * timestamps fall within the given window. This lets a single event
    * (one call to hit() for the short burst window) also be checked against
-   * a second, longer window (e.g. 2 minutes) to catch someone deliberately
+   * a second, longer window (e.g. 90s) to catch someone deliberately
    * pacing their actions just under the short-window threshold (e.g.
    * deleting channels one by one with a few seconds of confirmation delay
    * between each, which never crosses a 10s-window threshold even though
-   * dozens get deleted over a couple of minutes).
+   * dozens get deleted over a couple of minutes). Relies on hit() now
+   * retaining enough history for this to actually see it (see fix above).
    */
   count(guildId, userId, actionType, windowMs) {
     const key = this._key(guildId, userId, actionType);
@@ -64,7 +86,7 @@ class RateTracker {
    * Periodic cleanup to prevent the Map from growing indefinitely.
    * Fix (paced/slow nuke detection): default bumped from 60s to cover the
    * sustained (long) detection window with margin — otherwise this would
-   * silently wipe timestamps that count() still needs to check the 2-minute
+   * silently wipe timestamps that count() still needs to check the 90s
    * window, making the sustained check always under-report.
    */
   cleanup(maxAgeMs = (config.ANTINUKE_SUSTAINED_WINDOW_MS || 120_000) + 10_000) {
