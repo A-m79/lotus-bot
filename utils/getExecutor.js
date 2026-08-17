@@ -20,6 +20,20 @@ const { AuditLogEvent } = require("discord.js");
  * audit-log call) keeps the correct entry in range even under a rapid
  * burst well beyond any realistic threshold.
  *
+ * Bug fixed (deletions never punished at all): matching used
+ * `e.target?.id === targetId`. For deletion events (channelDelete,
+ * roleDelete, emojiDelete, stickerDelete...), the deleted object no longer
+ * exists by the time discord.js tries to resolve `entry.target`, so it's
+ * always `null`/`undefined` — the comparison failed on every single
+ * deletion, `entry` was never found, and `getExecutor` silently returned
+ * `null` for 100% of deletions (creation/update events were unaffected
+ * since their target still exists and resolves fine). This is why mass
+ * channel/role/emoji/sticker CREATION was correctly punished but mass
+ * DELETION never triggered anything. `entry.targetId` is a raw ID string
+ * that discord.js always populates regardless of whether the target object
+ * itself can still be resolved, so it's used first; `entry.target?.id` is
+ * kept as a fallback for safety.
+ *
  * @param {import('discord.js').Guild} guild
  * @param {import('discord.js').AuditLogEvent} auditType
  * @param {string} targetId - ID of the target (deleted channel/role/user) to match the right entry
@@ -30,7 +44,7 @@ async function getExecutor(guild, auditType, targetId, maxAgeMs = 5000) {
     const logs = await guild.fetchAuditLogs({ type: auditType, limit: 25 });
     const entry = logs.entries.find(
       (e) =>
-        (!targetId || e.target?.id === targetId) &&
+        (!targetId || e.targetId === targetId || e.target?.id === targetId) &&
         Date.now() - e.createdTimestamp <= maxAgeMs
     );
     return entry?.executor ?? null;
