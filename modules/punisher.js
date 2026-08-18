@@ -9,6 +9,7 @@ const {
 const config = require("../config/config");
 const SecurityLog = require("../models/SecurityLog");
 const GuildConfig = require("../models/GuildConfig");
+const { getGuildConfig, invalidateGuildConfig } = require("../utils/configCache");
 
 const activePunishments = new Set();
 
@@ -57,6 +58,46 @@ function isSevereAction(actionType) {
 
 function generateCaseId() {
   return `CASE-${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
+}
+
+/**
+ * Adds a user to the persistent quarantine list (survives a leave + rejoin,
+ * unlike Discord roles which get wiped when a member leaves).
+ */
+async function addToQuarantineList(guildId, userId) {
+  await GuildConfig.findOneAndUpdate(
+    { guildId },
+    { $addToSet: { quarantinedUserIds: userId } }
+  ).catch((err) => console.error("[Punisher] Failed to persist quarantine status:", err.message));
+  invalidateGuildConfig(guildId);
+}
+
+/**
+ * Removes a user from the persistent quarantine list (called when staff
+ * manually lift the quarantine role from a member).
+ */
+async function removeFromQuarantineList(guildId, userId) {
+  await GuildConfig.findOneAndUpdate(
+    { guildId },
+    { $pull: { quarantinedUserIds: userId } }
+  ).catch((err) => console.error("[Punisher] Failed to clear quarantine status:", err.message));
+  invalidateGuildConfig(guildId);
+}
+
+/**
+ * Auto-revokes Whitelist status for a member who just got sanctioned.
+ * The whitelist bonus (+3 tolerated actions before triggering, see
+ * antiNuke.js) is meant for trusted staff — a whitelisted account that just
+ * got sanctioned is either a staff member who made a serious mistake or,
+ * worse, a compromised account. Either way it shouldn't keep its elevated
+ * trust automatically; a human has to consciously re-add it after review.
+ */
+async function revokeWhitelistOnSanction(guildId, userId) {
+  await GuildConfig.findOneAndUpdate(
+    { guildId },
+    { $pull: { whitelist: userId } }
+  ).catch((err) => console.error("[Punisher] Failed to auto-revoke whitelist:", err.message));
+  invalidateGuildConfig(guildId);
 }
 
 /**
@@ -166,9 +207,6 @@ async function punish({
   let statusIcon = "⚙️";
   let success = false;
   let adminRoleRemoved = false;
-  // Fix (leave/rejoin quarantine bypass): tracks whether this call actually
-  // placed the member into the isolation role, so we know to persist it below.
-  let appliedQuarantine = false;
 
   const me = await guild.members.fetchMe().catch(() => guild.members.me);
   const canManageTarget =
@@ -235,9 +273,9 @@ async function punish({
             const currentRoles = member.roles.cache.filter((r) => r.id !== guild.id).map((r) => r.id);
             details.previousRoles = currentRoles;
             await member.roles.set([qRoleId], `[Lotus #${caseId}] ${reason}`);
+            await addToQuarantineList(guild.id, executorId);
             punishmentApplied = "QUARANTINE (Isolation)";
             statusIcon = "☣️";
-            appliedQuarantine = true;
           } else {
             await member.roles.set([], `[Lotus #${caseId}] ${reason}`);
             punishmentApplied = "STRIP_ROLES (Fallback: No Quarantine role)";
@@ -250,9 +288,9 @@ async function punish({
         default:
           if (qRoleId) {
             await member.roles.set([qRoleId], `[Lotus #${caseId}] ${reason}`);
+            await addToQuarantineList(guild.id, executorId);
             punishmentApplied = "STRIP_ROLES + ISOLATION";
             statusIcon = "☣️";
-            appliedQuarantine = true;
           } else {
             await member.roles.set([], `[Lotus #${caseId}] ${reason}`);
             punishmentApplied = "STRIP_ROLES (All roles removed)";
@@ -276,15 +314,11 @@ async function punish({
     statusIcon = "⚠️";
   }
 
-  // Fix (leave/rejoin quarantine bypass): persist quarantine state in the
-  // database (not in Discord roles, which are wiped on leave) so that
-  // verificationGate.js can re-quarantine the member instantly if they
-  // leave and rejoin instead of letting them redo the captcha.
-  if (appliedQuarantine) {
-    await GuildConfig.updateOne(
-      { guildId: guild.id },
-      { $addToSet: { quarantinedUserIds: executorId } }
-    ).catch((err) => console.error(`[Punisher #${caseId}] Failed to persist quarantine state:`, err.message));
+  // A whitelisted account that just got sanctioned loses its whitelist
+  // status automatically — see revokeWhitelistOnSanction() for why.
+  const wasWhitelisted = success && (guildConfig?.whitelist?.includes(executorId) ?? false);
+  if (wasWhitelisted) {
+    await revokeWhitelistOnSanction(guild.id, executorId);
   }
 
   if (targetUser && !targetUser.bot && success) {
@@ -299,6 +333,14 @@ async function punish({
       )
       .setFooter({ text: "If you believe this is a mistake, contact an administrator." })
       .setTimestamp();
+
+    if (wasWhitelisted) {
+      dmEmbed.addFields({
+        name: "⚠️ Whitelist",
+        value: "Your Whitelist status has been automatically revoked pending review.",
+        inline: false,
+      });
+    }
 
     await targetUser.send({ embeds: [dmEmbed] }).catch(() => null);
   }
@@ -326,6 +368,14 @@ async function punish({
     )
     .setFooter({ text: `Lotus Security System • Case #${caseId}` })
     .setTimestamp();
+
+  if (wasWhitelisted) {
+    embed.addFields({
+      name: "⚠️ Whitelist Revoked",
+      value: "This account was on the Whitelist and has been automatically removed from it pending manual review.",
+      inline: false,
+    });
+  }
 
   const targetChannelId = guildConfig?.logChannelId || guildConfig?.alertChannelId;
   let logSent = false;
@@ -416,39 +466,26 @@ async function handleRestoreAdminButton(interaction) {
 }
 
 /**
- * Fix (leave/rejoin quarantine bypass): keeps the persistent quarantinedUserIds
- * list in sync when a staff member manually removes the Lotus Quarantine role
- * from a member (i.e. releases them). Without this, a released member would
- * stay stuck in the persistent list forever and get re-quarantined on every
- * future rejoin, even after being cleared by staff.
+ * Watches for members manually released from quarantine — e.g. staff removing
+ * the "Lotus Quarantine" role by hand from Discord's member panel — and clears
+ * them from the persistent quarantine list. Without this, someone who was
+ * legitimately cleared by staff would still get auto-re-quarantined the next
+ * time they leave and rejoin the server.
  */
 function registerQuarantineSync(client) {
   client.on("guildMemberUpdate", async (oldMember, newMember) => {
-    let qRoleId = null;
-
-    const guildConfigDoc = await GuildConfig.findOne({ guildId: newMember.guild.id }).lean().catch(() => null);
-    qRoleId = guildConfigDoc?.quarantineRoleId;
-
-    if (!qRoleId) {
-      const role = newMember.guild.roles.cache.find((r) => r.name === "Lotus Quarantine");
-      qRoleId = role?.id;
-    }
+    const guildConfig = await getGuildConfig(newMember.guild.id).catch(() => null);
+    const qRoleId = guildConfig?.quarantineRoleId;
     if (!qRoleId) return;
 
     const hadRole = oldMember.roles.cache.has(qRoleId);
     const hasRole = newMember.roles.cache.has(qRoleId);
 
-    // Role went from present to absent: staff released this member, so
-    // clear them from the persistent quarantine list too.
     if (hadRole && !hasRole) {
-      await GuildConfig.updateOne(
-        { guildId: newMember.guild.id },
-        { $pull: { quarantinedUserIds: newMember.id } }
-      ).catch((err) => console.error("[Punisher] Failed to release quarantine state:", err.message));
+      await removeFromQuarantineList(newMember.guild.id, newMember.id);
+      console.log(`[Punisher] ${newMember.user.tag} manually released from quarantine on ${newMember.guild.name} — cleared from the persistent list.`);
     }
   });
-
-  console.log("[Punisher] Quarantine persistence sync active.");
 }
 
 module.exports = { punish, ensureQuarantineSetup, handleRestoreAdminButton, registerQuarantineSync };

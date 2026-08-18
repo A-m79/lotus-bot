@@ -1,7 +1,7 @@
 require("dotenv").config();
 const fs = require("fs");
 const path = require("path");
-const { Client, GatewayIntentBits, Partials, Collection, PermissionFlagsBits, GuildMFALevel } = require("discord.js");
+const { Client, GatewayIntentBits, Partials, Collection, PermissionFlagsBits, GuildMFALevel, ButtonBuilder, ActionRowBuilder, ButtonStyle } = require("discord.js");
 
 const { connectDatabase } = require("./database/connect");
 const { keepAlive } = require("./keepAlive");
@@ -10,6 +10,7 @@ const { handleRestoreRolesButton } = require("./utils/logProtector");
 const { handleRestoreAdminButton, registerQuarantineSync } = require("./modules/punisher");
 const { takeBackup } = require("./utils/backupEngine");
 const config = require("./config/config");
+const GuildConfig = require("./models/GuildConfig");
 
 const { registerAntiNuke } = require("./modules/antiNuke");
 const { registerAntiRaid } = require("./modules/antiRaid");
@@ -57,6 +58,10 @@ client.on("interactionCreate", async (interaction) => {
     return handleVerificationInteraction(interaction);
   }
 
+  if (interaction.isButton() && interaction.customId.startsWith("disable_2fa_reminder_")) {
+    return handleDisable2FAReminderButton(interaction);
+  }
+
   if (!interaction.isChatInputCommand()) return;
 
   const command = client.commands.get(interaction.commandName);
@@ -89,8 +94,29 @@ client.on("interactionCreate", async (interaction) => {
   }
 });
 
-// Last 2FA alert sent per server, to avoid spamming the owner (max 1x/24h)
-const last2FAWarning = new Map();
+/**
+ * Handles the "Stop these reminders" button attached to the 2FA reminder DM.
+ * The button is only clickable by the DM recipient (Discord enforces that
+ * naturally for bot DMs), so no extra owner check is needed here.
+ */
+async function handleDisable2FAReminderButton(interaction) {
+  const guildId = interaction.customId.replace("disable_2fa_reminder_", "");
+  const guild = client.guilds.cache.get(guildId);
+
+  await GuildConfig.findOneAndUpdate(
+    { guildId },
+    { $set: { twoFactorReminderDisabled: true } }
+  ).catch(() => null);
+
+  return interaction.update({
+    content:
+      `🔕 **Reminders stopped${guild ? ` for ${guild.name}` : ""}.**\n\n` +
+      `You won't receive this 2FA reminder again for this server. You can still enable ` +
+      `Server Settings → Moderation → Two-Factor Authentication at any time if you change your mind.`,
+    embeds: [],
+    components: [],
+  }).catch(() => null);
+}
 
 function setupCronTasks() {
   // Auto backup every 24h
@@ -123,21 +149,46 @@ function setupCronTasks() {
       // attacker to act directly as a moderator/admin. This setting is free
       // and native to Discord; Lotus just checks that it's enabled and
       // sends a reminder once every 24h max if it isn't.
+      //
+      // Fix (reminder spammed on restart): the "last sent" timestamp used to
+      // live in an in-memory Map, wiped on every process restart (redeploy,
+      // crash, free-tier sleep/wake) — a restart within the 24h window meant
+      // the reminder fired again immediately even though one had just gone
+      // out. It's now read from and written to MongoDB via a single atomic
+      // findOneAndUpdate: the update only matches (and only then do we send
+      // the DM) if last2FAWarningAt is null or older than 24h, so two
+      // overlapping runs of this interval can never both pass the check.
       if (guild.mfaLevel === GuildMFALevel.None) {
-        const lastWarn = last2FAWarning.get(guild.id) || 0;
-        if (Date.now() - lastWarn > 24 * 60 * 60 * 1000) {
-          last2FAWarning.set(guild.id, Date.now());
+        const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+        const staleConfig = await GuildConfig.findOneAndUpdate(
+          {
+            guildId: guild.id,
+            twoFactorReminderDisabled: { $ne: true },
+            $or: [{ last2FAWarningAt: null }, { last2FAWarningAt: { $lte: cutoff } }],
+          },
+          { $set: { last2FAWarningAt: new Date() } }
+        ).catch(() => null);
+
+        if (staleConfig) {
           const owner = await guild.fetchOwner().catch(() => null);
           if (owner) {
-            await owner.send(
-              `🔐 **Security reminder — ${guild.name}**\n\n` +
-                `2FA is not required for moderation actions on this server ` +
-                `(Server Settings → Moderation → Two-Factor Authentication). ` +
-                `Without it, a simple stolen password is enough for an attacker to act ` +
-                `as a moderator/admin, even without accessing the full Discord account.\n\n` +
-                `This is a free, native Discord setting (no need for Lotus) — ` +
-                `enable it to close this gap.`
-            ).catch(() => null);
+            const disableButton = new ButtonBuilder()
+              .setCustomId(`disable_2fa_reminder_${guild.id}`)
+              .setLabel("🔕 Stop these reminders")
+              .setStyle(ButtonStyle.Secondary);
+            const row = new ActionRowBuilder().addComponents(disableButton);
+
+            await owner.send({
+              content:
+                `🔐 **Security reminder — ${guild.name}**\n\n` +
+                  `2FA is not required for moderation actions on this server ` +
+                  `(Server Settings → Moderation → Two-Factor Authentication). ` +
+                  `Without it, a simple stolen password is enough for an attacker to act ` +
+                  `as a moderator/admin, even without accessing the full Discord account.\n\n` +
+                  `This is a free, native Discord setting (no need for Lotus) — ` +
+                  `enable it to close this gap.`,
+              components: [row],
+            }).catch(() => null);
           }
         }
       }
@@ -161,9 +212,6 @@ async function main() {
   registerVerificationGate(client);
   registerInviteTracker(client);
   registerPhishingDetection(client);
-  // Fix (leave/rejoin quarantine bypass): keeps GuildConfig.quarantinedUserIds
-  // in sync whenever staff manually releases a member from the Lotus
-  // Quarantine role, so they aren't stuck re-quarantined forever after being pardoned.
   registerQuarantineSync(client);
 
   await client.login(process.env.DISCORD_TOKEN);

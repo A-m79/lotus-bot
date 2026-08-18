@@ -53,16 +53,31 @@ const GuildConfigSchema = new Schema(
     // ID-based cache.
     quarantineChannelId: { type: String, default: null },
 
-    // Fix (leave/rejoin quarantine bypass): Discord does not persist a member's
-    // roles once they leave the server, so a quarantined member could previously
-    // just leave and rejoin to be handed the normal "Unverified" role again and
-    // pass the captcha, fully escaping quarantine. This array is the durable,
-    // database-backed source of truth for "who is currently in quarantine" and
-    // is checked directly (bypassing any cache) on guildMemberAdd.
+    // Persistent list of user IDs currently under quarantine, independent of
+    // Discord roles. Discord wipes ALL of a member's roles when they leave the
+    // server, so relying on the "Lotus Quarantine" role alone means a simple
+    // leave + rejoin would silently clear the sanction. This list survives
+    // that, and is checked by the verification gate on guildMemberAdd to
+    // re-quarantine a returning member instead of sending them through the
+    // normal (bypassable) verification flow. Entries are removed automatically
+    // when staff manually take the quarantine role off a member.
     quarantinedUserIds: { type: [String], default: [] },
 
     lockdownActive: { type: Boolean, default: false },
     whitelist: { type: [String], default: [] },
+
+    // Fix (2FA reminder spammed on restart): this used to live in an
+    // in-memory Map in index.js, reset to empty every time the process
+    // restarts (redeploy, crash, free-tier sleep/wake). A restart within the
+    // 24h window meant the "once per day max" reminder fired again from
+    // scratch, even though one had already gone out recently. Storing the
+    // timestamp in the database instead makes it survive restarts.
+    last2FAWarningAt: { type: Date, default: null },
+
+    // Lets the server owner permanently opt out of the 2FA reminder DM via
+    // the button attached to it, for servers that intentionally don't want
+    // to enable Discord's native moderator 2FA requirement.
+    twoFactorReminderDisabled: { type: Boolean, default: false },
   },
   { timestamps: true }
 );
