@@ -204,6 +204,20 @@ client.once("ready", () => {
   setupCronTasks();
 });
 
+// 🔧 TEMPORARY DEBUG — remove once the login-hang issue is diagnosed.
+// discord.js surfaces some low-level connection problems as EVENTS rather
+// than thrown/rejected errors, so a bare `await client.login()` can hang
+// silently without ever showing up in a try/catch or in main().catch().
+client.on("error", (err) => {
+  console.error("[DEBUG client] 'error' event:", err);
+});
+client.on("shardError", (err, shardId) => {
+  console.error(`[DEBUG client] 'shardError' event on shard ${shardId}:`, err);
+});
+client.on("warn", (info) => {
+  console.warn("[DEBUG client] 'warn' event:", info);
+});
+
 async function main() {
   await connectDatabase();
 
@@ -216,7 +230,11 @@ async function main() {
   registerPhishingDetection(client);
   registerQuarantineSync(client);
 
+  // 🔧 TEMPORARY DEBUG — remove once the login-hang issue is diagnosed.
+  console.log("[DEBUG main] About to call client.login()...");
   await client.login(process.env.DISCORD_TOKEN);
+  console.log("[DEBUG main] client.login() resolved successfully.");
+
   keepAlive(client);
 }
 
