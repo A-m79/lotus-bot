@@ -29,7 +29,7 @@ module.exports = {
     .addBooleanOption((option) =>
       option
         .setName("verification")
-        .setDescription("Enable the entry verification captcha (default: true). Set to false if you already have your own join gate/onboarding.")
+        .setDescription("Enable the verification captcha (default: true; disable if you already have a join gate).")
         .setRequired(false)
     )
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
