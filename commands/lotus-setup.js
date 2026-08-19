@@ -26,6 +26,12 @@ module.exports = {
   data: new SlashCommandBuilder()
     .setName("lotus-setup")
     .setDescription("Analyzes and automatically configures/repairs Lotus's security infrastructure.")
+    .addBooleanOption((option) =>
+      option
+        .setName("verification")
+        .setDescription("Enable the entry verification captcha (default: true). Set to false if you already have your own join gate/onboarding.")
+        .setRequired(false)
+    )
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
   async execute(interaction) {
@@ -35,6 +41,8 @@ module.exports = {
       }
 
       const guild = interaction.guild;
+      const enableVerification = interaction.options.getBoolean("verification") ?? true;
+
       let config = await GuildConfig.findOne({ guildId: guild.id });
       if (!config) {
         config = new GuildConfig({ guildId: guild.id });
@@ -204,99 +212,114 @@ module.exports = {
         actionsTaken.push(`🔒 **Quarantine Channel:** Found and verified (<#${quarantineChannel.id}>).`);
       }
 
-      // 6. Detect or create the "Unverified" Role (entry gate)
-      let unverifiedRole = config.unverifiedRoleId ? guild.roles.cache.get(config.unverifiedRoleId) : null;
-      if (!unverifiedRole) {
-        unverifiedRole = guild.roles.cache.find((r) => r.name === "Lotus Unverified");
-      }
+      // 6-9. Entry verification gate (Unverified role, verification channel,
+      // channel masking, verification message). Skippable via the
+      // `verification:false` option — e.g. when the server already has its
+      // own join gate (Discord's native onboarding, another bot, etc.) and
+      // doesn't need Lotus's captcha on top of it.
+      if (enableVerification) {
+        // 6. Detect or create the "Unverified" Role (entry gate)
+        let unverifiedRole = config.unverifiedRoleId ? guild.roles.cache.get(config.unverifiedRoleId) : null;
+        if (!unverifiedRole) {
+          unverifiedRole = guild.roles.cache.find((r) => r.name === "Lotus Unverified");
+        }
 
-      if (!unverifiedRole) {
-        unverifiedRole = await guild.roles.create({
-          name: "Lotus Unverified",
-          color: "#99AAB5",
-          reason: "Automatic creation of the verification role by /lotus-setup",
-        });
-        config.unverifiedRoleId = unverifiedRole.id;
-        actionsTaken.push("🕐 **Unverified Role:** `Lotus Unverified` created.");
+        if (!unverifiedRole) {
+          unverifiedRole = await guild.roles.create({
+            name: "Lotus Unverified",
+            color: "#99AAB5",
+            reason: "Automatic creation of the verification role by /lotus-setup",
+          });
+          config.unverifiedRoleId = unverifiedRole.id;
+          actionsTaken.push("🕐 **Unverified Role:** `Lotus Unverified` created.");
+        } else {
+          config.unverifiedRoleId = unverifiedRole.id;
+          actionsTaken.push(`🕐 **Unverified Role:** Found (<@&${unverifiedRole.id}>).`);
+        }
+
+        // 7. Detect or create the Verification Channel (hidden once verified)
+        let verificationChannel = config.verificationChannelId ? guild.channels.cache.get(config.verificationChannelId) : null;
+        if (!verificationChannel) {
+          verificationChannel = guild.channels.cache.find(
+            (c) => c.type === ChannelType.GuildText && c.name === "✅-verification"
+          );
+        }
+
+        // Permissions: @everyone hidden, visible ONLY to the "Lotus Unverified" role
+        const verificationPermissions = [
+          {
+            id: guild.id,
+            deny: [PermissionFlagsBits.ViewChannel], // Blocked for everyone by default (including verified members)
+          },
+          {
+            id: unverifiedRole.id,
+            allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory], // Allowed ONLY for unverified members
+            deny: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.AddReactions],
+          },
+          {
+            id: guild.client.user.id,
+            allow: [
+              PermissionFlagsBits.ViewChannel,
+              PermissionFlagsBits.SendMessages,
+              PermissionFlagsBits.EmbedLinks,
+              PermissionFlagsBits.ManageMessages,
+            ],
+          },
+        ];
+
+        if (!verificationChannel) {
+          verificationChannel = await guild.channels.create({
+            name: "✅-verification",
+            type: ChannelType.GuildText,
+            topic: "Mandatory verification before accessing the rest of the server",
+            permissionOverwrites: verificationPermissions,
+          });
+          config.verificationChannelId = verificationChannel.id;
+          actionsTaken.push("✅ **Verification Channel:** `#✅-verification` created (restricted to unverified members).");
+        } else {
+          // Applies the new permissions even if the channel already existed
+          await verificationChannel.permissionOverwrites.set(verificationPermissions).catch(() => null);
+          config.verificationChannelId = verificationChannel.id;
+          actionsTaken.push(`✅ **Verification Channel:** Found and permissions adjusted (<#${verificationChannel.id}>).`);
+        }
+
+        // 8. Hide all OTHER existing channels from the Unverified role
+        const allChannels = await guild.channels.fetch();
+        let protectedCount = 0;
+        for (const [, ch] of allChannels) {
+          if (!ch || !ch.permissionOverwrites) continue;
+          if (ch.id === verificationChannel.id) continue;
+          if (ch.parentId === category.id) continue;
+
+          await ch.permissionOverwrites
+            .edit(unverifiedRole.id, { ViewChannel: false }, { reason: "Lotus Verification Gate: initial masking" })
+            .catch(() => null);
+          protectedCount++;
+        }
+        actionsTaken.push(`🙈 **Masking:** ${protectedCount} existing channel(s) made invisible to unverified members.`);
+
+        // 9. Send (or verify) the verification message with the button
+        await postVerificationMessage(verificationChannel);
+        actionsTaken.push("🔘 **Verification Message:** Challenge start button posted and pinned.");
       } else {
-        config.unverifiedRoleId = unverifiedRole.id;
-        actionsTaken.push(`🕐 **Unverified Role:** Found (<@&${unverifiedRole.id}>).`);
-      }
-
-      // 7. Detect or create the Verification Channel (hidden once verified)
-      let verificationChannel = config.verificationChannelId ? guild.channels.cache.get(config.verificationChannelId) : null;
-      if (!verificationChannel) {
-        verificationChannel = guild.channels.cache.find(
-          (c) => c.type === ChannelType.GuildText && c.name === "✅-verification"
+        actionsTaken.push(
+          "🔕 **Entry Verification:** Skipped (`verification:false`) — no Unverified role, no verification channel, no channel masking. " +
+          "Make sure your own join gate (onboarding, another bot, etc.) covers this instead."
         );
       }
 
-      // Permissions: @everyone hidden, visible ONLY to the "Lotus Unverified" role
-      const verificationPermissions = [
-        {
-          id: guild.id,
-          deny: [PermissionFlagsBits.ViewChannel], // Blocked for everyone by default (including verified members)
-        },
-        {
-          id: unverifiedRole.id,
-          allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory], // Allowed ONLY for unverified members
-          deny: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.AddReactions],
-        },
-        {
-          id: guild.client.user.id,
-          allow: [
-            PermissionFlagsBits.ViewChannel,
-            PermissionFlagsBits.SendMessages,
-            PermissionFlagsBits.EmbedLinks,
-            PermissionFlagsBits.ManageMessages,
-          ],
-        },
-      ];
-
-      if (!verificationChannel) {
-        verificationChannel = await guild.channels.create({
-          name: "✅-verification",
-          type: ChannelType.GuildText,
-          topic: "Mandatory verification before accessing the rest of the server",
-          permissionOverwrites: verificationPermissions,
-        });
-        config.verificationChannelId = verificationChannel.id;
-        actionsTaken.push("✅ **Verification Channel:** `#✅-verification` created (restricted to unverified members).");
-      } else {
-        // Applies the new permissions even if the channel already existed
-        await verificationChannel.permissionOverwrites.set(verificationPermissions).catch(() => null);
-        config.verificationChannelId = verificationChannel.id;
-        actionsTaken.push(`✅ **Verification Channel:** Found and permissions adjusted (<#${verificationChannel.id}>).`);
-      }
-
-      // 8. Hide all OTHER existing channels from the Unverified role
-      const allChannels = await guild.channels.fetch();
-      let protectedCount = 0;
-      for (const [, ch] of allChannels) {
-        if (!ch || !ch.permissionOverwrites) continue;
-        if (ch.id === verificationChannel.id) continue;
-        if (ch.parentId === category.id) continue;
-
-        await ch.permissionOverwrites
-          .edit(unverifiedRole.id, { ViewChannel: false }, { reason: "Lotus Verification Gate: initial masking" })
-          .catch(() => null);
-        protectedCount++;
-      }
-      actionsTaken.push(`🙈 **Masking:** ${protectedCount} existing channel(s) made invisible to unverified members.`);
-
-      // 9. Send (or verify) the verification message with the button
-      await postVerificationMessage(verificationChannel);
-      actionsTaken.push("🔘 **Verification Message:** Challenge start button posted and pinned.");
-
-      // 10. Force-enable all protection & sanction modules
+      // 10. Force-enable protection & sanction modules (verification follows
+      // the `verification` option chosen above instead of being forced on).
       config.antiNukeEnabled = true;
       config.antiRaidEnabled = true;
       config.antiSpamEnabled = true;
       config.altDetectionEnabled = true;
-      config.verificationEnabled = true;
+      config.verificationEnabled = enableVerification;
       config.punishment = "quarantine";
 
-      actionsTaken.push("🛡️ **Protection Systems:** `Anti-Nuke`, `Anti-Raid`, `Anti-Spam`, `Anti-Alt-Detection`, and `Entry Verification` **ENABLED** (Mode: Quarantine).");
+      actionsTaken.push(
+        `🛡️ **Protection Systems:** \`Anti-Nuke\`, \`Anti-Raid\`, \`Anti-Spam\`, \`Anti-Alt-Detection\`${enableVerification ? ", and `Entry Verification`" : ""} **ENABLED** (Mode: Quarantine).`
+      );
 
       // 11. Save to DB & Clear the Cache
       await config.save();
