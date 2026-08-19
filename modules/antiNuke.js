@@ -44,8 +44,18 @@ function isOwner(guild, userId) {
   return false;
 }
 
-function isWhitelisted(guildConfig, userId) {
-  return guildConfig?.whitelist?.includes(userId) ?? false;
+function isWhitelisted(guild, guildConfig, userId) {
+  if (guildConfig?.whitelist?.includes(userId)) return true;
+
+  if (!guildConfig?.whitelistRoles?.length) return false;
+
+  // Uses the gateway cache only (no extra API fetch) — the member is normally
+  // already cached since the GuildMembers intent is enabled and the member
+  // just performed the action that triggered this check.
+  const member = guild.members.cache.get(userId);
+  if (!member) return false;
+
+  return member.roles.cache.some((r) => guildConfig.whitelistRoles.includes(r.id));
 }
 
 // Fix (protection scaled to server size): maps an actionType to a function
@@ -80,7 +90,7 @@ async function checkAndPunish({ guild, executorId, actionType, reasonLabel, deta
   if (isOwner(guild, executorId)) return false;
 
   const baseThreshold = getThreshold(guildConfig, actionType);
-  const isWL = isWhitelisted(guildConfig, executorId);
+  const isWL = isWhitelisted(guild, guildConfig, executorId);
 
   // Whitelist gives extra margin (+3 tolerated actions) but no longer grants
   // total immunity: a compromised whitelisted account must remain punishable.

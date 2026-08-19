@@ -65,6 +65,11 @@ const GuildConfigSchema = new Schema(
 
     lockdownActive: { type: Boolean, default: false },
     whitelist: { type: [String], default: [] },
+    // Role IDs that grant the same anti-nuke threshold bonus as an individual
+    // whitelist entry — any member holding one of these roles is treated as
+    // whitelisted, without having to be listed individually (e.g. a shared
+    // "bot-auto" role used by several trusted automation accounts).
+    whitelistRoles: { type: [String], default: [] },
 
     // Fix (2FA reminder spammed on restart): this used to live in an
     // in-memory Map in index.js, reset to empty every time the process

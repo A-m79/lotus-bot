@@ -71,7 +71,9 @@ client.on("interactionCreate", async (interaction) => {
     const guildConfig = await getGuildConfig(interaction.guildId).catch(() => null);
     const isOwner = interaction.user.id === interaction.guild?.ownerId;
     const isBotOwner = process.env.OWNER_ID && interaction.user.id === process.env.OWNER_ID;
-    const isWhitelisted = guildConfig?.whitelist?.includes(interaction.user.id);
+    const isWhitelisted =
+      (guildConfig?.whitelist?.includes(interaction.user.id) ?? false) ||
+      (guildConfig?.whitelistRoles?.some((roleId) => interaction.member?.roles.cache.has(roleId)) ?? false);
 
     if (!isOwner && !isBotOwner && !isWhitelisted) {
       return interaction.reply({
