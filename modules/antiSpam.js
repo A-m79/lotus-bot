@@ -73,20 +73,33 @@ function analyzeMessage(message, permLevel) {
 /**
  * Advanced, time-windowed mention checking (Mass vs Individual)
  */
-function checkMentionLimits(message, permLevel) {
+function checkMentionLimits(message, permLevel, guildConfig) {
+  // Kill switch: sécurité anti-mentions désactivée pour ce serveur.
+  if (guildConfig?.pingSecurityEnabled === false) return null;
+
   const userId = message.author.id;
   const now = Date.now();
+  const protectedIds = guildConfig?.protectedMentionIds ?? [];
 
-  // A. Mass Mentions (@everyone, @here, @Role)
+  // A. Mass Mentions (@everyone, @here + rôles/personnes explicitement
+  // protégés). Un rôle "normal" mentionné (ex: @soutiens) n'est PLUS compté
+  // ici par défaut — seuls @everyone/@here et les IDs ajoutés dans
+  // protectedMentionIds ont cette sévérité.
   const hasEveryoneOrHere = message.mentions.everyone;
-  const roleMentionsCount = message.mentions.roles.size;
-  const massMentionsInMsg = (hasEveryoneOrHere ? 1 : 0) + roleMentionsCount;
+  const protectedRoleMentions = message.mentions.roles.filter((r) =>
+    protectedIds.includes(r.id)
+  ).size;
+  const protectedUserMentions = message.mentions.users.filter((u) =>
+    protectedIds.includes(u.id)
+  ).size;
+  const massMentionsInMsg =
+    (hasEveryoneOrHere ? 1 : 0) + protectedRoleMentions + protectedUserMentions;
 
   if (massMentionsInMsg > 0) {
     if (permLevel === "member") {
       return {
         type: "massMentionSpam",
-        reason: "Unauthorized mass mention (@everyone/@here/Role)",
+        reason: "Unauthorized mass mention (@everyone/@here/protected role or user)",
       };
     }
 
@@ -210,7 +223,7 @@ function registerAntiSpam(client) {
 
     // Vector B: Smart mention control (Mass & Individual)
     if (!triggered) {
-      const mentionAnalysis = checkMentionLimits(message, permLevel);
+      const mentionAnalysis = checkMentionLimits(message, permLevel, guildConfig);
       if (mentionAnalysis) {
         triggered = true;
         actionType = mentionAnalysis.type;

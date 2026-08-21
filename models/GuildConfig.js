@@ -71,6 +71,22 @@ const GuildConfigSchema = new Schema(
     // "bot-auto" role used by several trusted automation accounts).
     whitelistRoles: { type: [String], default: [] },
 
+    // Fix (faux positifs sur les rôles pingables type "@soutiens"): active ou
+    // non la sécurité anti-mentions massives. Quand false, aucune mention
+    // (everyone/here/role/user) n'est plus jamais traitée comme spam par
+    // checkMentionLimits — les autres vecteurs (ads, caps, flood, doublons)
+    // restent actifs. Par défaut activé, avec un comportement resserré : par
+    // défaut seuls @everyone/@here comptent comme mention massive, plus les
+    // rôles/personnes explicitement ajoutés ci-dessous. Un rôle "normal" (ex:
+    // @soutiens) mentionné par un membre ne déclenche donc plus rien.
+    pingSecurityEnabled: { type: Boolean, default: true },
+
+    // IDs de rôles et/ou d'utilisateurs à protéger explicitement : les
+    // mentionner est traité avec la même sévérité qu'un @everyone/@here
+    // (instant pour les members, tolérance habituelle pour admin/whitelist),
+    // même si ce ne sont pas des mentions everyone/here/role génériques.
+    protectedMentionIds: { type: [String], default: [] },
+
     // Fix (2FA reminder spammed on restart): this used to live in an
     // in-memory Map in index.js, reset to empty every time the process
     // restarts (redeploy, crash, free-tier sleep/wake). A restart within the
