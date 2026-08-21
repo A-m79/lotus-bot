@@ -217,6 +217,9 @@ client.on("shardError", (err, shardId) => {
 client.on("warn", (info) => {
   console.warn("[DEBUG client] 'warn' event:", info);
 });
+client.on("debug", (msg) => {
+  console.log("[DEBUG gateway]", msg);
+});
 
 async function main() {
   await connectDatabase();
@@ -232,7 +235,22 @@ async function main() {
 
   // 🔧 TEMPORARY DEBUG — remove once the login-hang issue is diagnosed.
   console.log("[DEBUG main] About to call client.login()...");
-  await client.login(process.env.DISCORD_TOKEN);
+
+  // Fix (silent login hang): client.login() was observed hanging
+  // indefinitely with no resolve/reject and no 'error'/'shardError'/'warn'
+  // event — a network-level stall between Render and Discord that discord.js
+  // itself never surfaces. Left alone, this meant Render's port scan simply
+  // timed out ~5 minutes later with no actionable error anywhere. Racing it
+  // against a manual timeout turns that silent multi-minute stall into an
+  // immediate, loud failure — the process exits right away and Render
+  // restarts it, instead of waiting out the full port-scan timeout every time.
+  const LOGIN_TIMEOUT_MS = 30_000;
+  await Promise.race([
+    client.login(process.env.DISCORD_TOKEN),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`client.login() did not resolve within ${LOGIN_TIMEOUT_MS / 1000}s`)), LOGIN_TIMEOUT_MS)
+    ),
+  ]);
   console.log("[DEBUG main] client.login() resolved successfully.");
 
   keepAlive(client);
