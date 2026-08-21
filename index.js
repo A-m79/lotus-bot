@@ -62,6 +62,15 @@ client.on("interactionCreate", async (interaction) => {
     return handleDisable2FAReminderButton(interaction);
   }
 
+  if (interaction.isAutocomplete()) {
+    const command = client.commands.get(interaction.commandName);
+    if (!command || typeof command.autocomplete !== "function") return;
+
+    return command.autocomplete(interaction).catch((err) => {
+      console.error(`[Autocomplete] Error on /${interaction.commandName}:`, err);
+    });
+  }
+
   if (!interaction.isChatInputCommand()) return;
 
   const command = client.commands.get(interaction.commandName);

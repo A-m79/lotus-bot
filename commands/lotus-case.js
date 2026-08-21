@@ -11,7 +11,42 @@ module.exports = {
         .setName("id")
         .setDescription("Case number, e.g. CASE-UVS7Z (or just UVS7Z)")
         .setRequired(true)
+        .setAutocomplete(true)
     ),
+
+  async autocomplete(interaction) {
+    try {
+      const focused = interaction.options.getFocused().trim().toLowerCase();
+
+      // On tire les 100 cases les plus récentes plutôt que toute la
+      // collection : Discord veut une réponse en moins de 3s, et on filtre
+      // ensuite en mémoire (sur le caseId, le pseudo et le type de sanction).
+      const logs = await SecurityLog.find({ guildId: interaction.guild.id })
+        .sort({ createdAt: -1 })
+        .limit(100)
+        .select("caseId executorId type createdAt")
+        .lean();
+
+      const mapped = logs.map((log) => {
+        // Cache uniquement (pas de fetch API) pour rester rapide : si le
+        // membre n'est pas en cache, on retombe sur son ID brut.
+        const member = interaction.guild.members.cache.get(log.executorId);
+        const label = member ? member.user.tag : log.executorId ? `ID ${log.executorId}` : "Unknown";
+        return {
+          name: `${log.caseId} • ${label} • ${log.type}`.slice(0, 100),
+          value: log.caseId,
+          searchable: `${log.caseId} ${label} ${log.type}`.toLowerCase(),
+        };
+      });
+
+      const filtered = focused ? mapped.filter((c) => c.searchable.includes(focused)) : mapped;
+
+      return interaction.respond(filtered.slice(0, 25).map(({ name, value }) => ({ name, value })));
+    } catch (error) {
+      console.error("[LOTUS-CASE AUTOCOMPLETE ERROR]", error);
+      return interaction.respond([]).catch(() => null);
+    }
+  },
 
   async execute(interaction) {
     let caseId = interaction.options.getString("id").trim().toUpperCase();
